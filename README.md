@@ -56,9 +56,10 @@ session-ını işlədir, `requireBoss`/visibility gate-ləri olduğu kimi qalır
 
 ## Public demo deploy
 
-Frontend GitHub Pages-də, API isə Render-də işləyir. `render.yaml` Blueprint kimi
-deploy ediləndən sonra API `https://appina-procurement-api.onrender.com` ünvanında
-əlçatan olur və Pages build-i bu API-yə bağlanır.
+GitHub Pages backend server işlətmədiyi üçün public demo brauzer daxilində işləyən
+uyğun API emulyatorundan istifadə edir. Login, sifariş, qərar, kataloq, silmə və
+dashboard məlumatları həmin istifadəçinin brauzerində `localStorage`-da saxlanır.
+Beləliklə demo heç bir əlavə hosting və ya API hesabı tələb etmir.
 
 ## Təhlükəsizlik qeydləri
 

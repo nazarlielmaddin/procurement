@@ -31,6 +31,8 @@ jobs:
         run: npm ci
       - name: Build client
         working-directory: client
+        env:
+          VITE_API_URL: https://appina-procurement-api.onrender.com/api
         run: npm run build
       - name: Configure Pages
         uses: actions/configure-pages@v5

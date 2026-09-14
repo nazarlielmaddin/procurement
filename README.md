@@ -54,6 +54,12 @@ yan-yana, məs. 3 monitor → 2) · `rejected` (tam). Qərar tək-yazıçılıd�
 5 addımda). Standalone auth (`/api/auth/*`) drop-ində yoxdur — Appina öz
 session-ını işlədir, `requireBoss`/visibility gate-ləri olduğu kimi qalır.
 
+## Public demo deploy
+
+Frontend GitHub Pages-də, API isə Render-də işləyir. `render.yaml` Blueprint kimi
+deploy ediləndən sonra API `https://appina-procurement-api.onrender.com` ünvanında
+əlçatan olur və Pages build-i bu API-yə bağlanır.
+
 ## Təhlükəsizlik qeydləri
 
 - Bütün SQL parametrizasiya olunub (heç bir string-interpolation yoxdur);

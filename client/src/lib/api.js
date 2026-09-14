@@ -1,5 +1,5 @@
 // Thin fetch wrapper (mirrors Appina Finance lib/api.js).
-const BASE = '/api';
+const BASE = import.meta.env.VITE_API_URL || '/api';
 
 async function request(method, path, body, opts = {}) {
   const isForm = body instanceof FormData;

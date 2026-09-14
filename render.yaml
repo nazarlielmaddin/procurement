@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: appina-procurement-api
+    runtime: node
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm run seed && npm start
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_ORIGIN
+        value: https://nazarlielmaddin.github.io

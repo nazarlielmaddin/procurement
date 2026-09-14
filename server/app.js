@@ -15,6 +15,18 @@ export function createApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
+  const allowedOrigin = process.env.FRONTEND_ORIGIN;
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (allowedOrigin && origin === allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    }
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
 
   // Ensure DB exists on boot.
   procDb();
@@ -49,7 +61,7 @@ export function createApp() {
     const { token, exp } = createSession(user.id);
     res.cookie(COOKIE, token, {
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: process.env.FRONTEND_ORIGIN ? 'none' : 'lax',
       // Local dev runs plain HTTP; production must be HTTPS-only.
       secure: process.env.NODE_ENV === 'production',
       expires: new Date(exp),

@@ -1,0 +1,17 @@
+{
+  "name": "appina-procurement-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Procurement module API — Appina Finance style (Express ESM + node:sqlite)",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "seed": "node scripts/seed.js",
+    "test": "node --test tests/procurement.test.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "express": "^4.21.2"
+  }
+}

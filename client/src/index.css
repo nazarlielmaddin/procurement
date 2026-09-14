@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+/* Appina Procurement — dark theme (palette v1, tünd tema əsasdır).
+   Core tokenlər palitraya 1:1 uyğundur; --elevated/--hover surface-dən
+   törədilib (palitrada tək surface addımı var). */
+:root {
+  color-scheme: dark;
+  --bg: #05070D;             /* Main Background */
+  --surface: #0B0E17;        /* Surface / Header + Card / Panel */
+  --elevated: #111727;       /* derived: raised hover/skeleton */
+  --line: #191F2D;           /* Border */
+  --input: #3B3B3B;          /* Input Background (filter input-ları) */
+  --ink: #E9F3FF;            /* Primary Text */
+  --ink-muted: #D4DDE9;      /* Secondary Text */
+  --ink-faint: #828DA4;      /* Muted Text */
+  --ink-very-muted: #535B6B; /* Very Muted (zəif metadata) */
+  --text: #E9F3FF;
+  --text-2: #D4DDE9;
+  --accent: #10B981;         /* Primary Green */
+  --accent-fg: #FFFFFF;
+  --accent-weak: rgba(16, 185, 129, 0.12);
+  --accent-text: #34d399;
+  --green-deep: #087A59;     /* Dark Green — button/status fonu */
+  --green-tint: #071A1A;     /* Green Tint — aktiv menu fonu */
+  --danger: #A01A1B;         /* Danger Red */
+  --logo-blue: #279CBD;      /* Logo Blue */
+  --hover: #161D31;          /* derived: row/hover fill */
+  /* Layout-system tokens (audit 2026-09: bütün hardcoded rənglər bura map olunur) */
+  --info: #3b82f6;           /* Info Blue (table accent, specialist badge) */
+  --active: #24D9F5;         /* Aktiv menyu (tipoqrafiya kataloqu) */
+  --warn: #f59e0b;           /* Warning amber (pending status) */
+  --status-red: #dc2626;     /* Status/danger red (rejected, delete) */
+  --on-accent: #061018;      /* Primary düymə mətni (tünd yaşıl üstündə) */
+  --violet: #8b5cf6;         /* Purple (gradient trio, decorator) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --control-h: 36px;
+  --content-max: 1400px;
+  --radius-card: 16px;
+  --radius-control: 8px;
+}
+
+/* Tailwind v4 theme — `inline` keeps var() references so dark-mode
+   token swaps flow through every utility (text-ink, bg-surface, …). */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-input: var(--input);
+  --color-text-2: var(--ink-muted);
+}
+@theme {
+  --shadow-float: 0 18px 50px -12px rgba(15, 30, 45, 0.28);
+}
+
+* { box-sizing: border-box; }
+html { min-width: 320px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button, input, select, textarea { font: inherit; }
+button:disabled { cursor: not-allowed; }
+/* Plain fallbacks (same values as the utilities above). */
+.bg-bg { background: var(--bg); }
+.bg-surface { background: var(--surface); }
+.bg-elevated { background: var(--elevated); }
+.bg-input { background: var(--input); }
+.bg-green-deep { background: var(--green-deep); }
+.bg-green-tint { background: var(--green-tint); }
+.bg-danger { background: var(--danger); }
+.text-ink { color: var(--ink); }
+.text-ink-muted { color: var(--ink-muted); }
+.text-ink-faint { color: var(--ink-faint); }
+.text-very-muted { color: var(--ink-very-muted); }
+.text-logo-blue { color: var(--logo-blue); }
+.border-line { border-color: var(--line); }

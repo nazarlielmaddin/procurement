@@ -6,19 +6,6 @@ Appina Finance keyfiyyət etalonu ilə — eyni stack, eyni üslub.
 **Stack:** React 18 + Vite + react-query + recharts + lucide · Express 4 ESM +
 node:sqlite · cookie session · scrypt (stdlib, bcrypt yoxdur) · ISO-8601 UTC.
 
-## Lokal işə salma (test üçün)
-
-```bash
-cd server && npm install && npm run seed -- --fresh   # 4 user + 5 demo məhsul
-node index.js                                          # :4173 (API + built client)
-cd ../client && npm install && npm run build           # dist/ → server avtomatik serve edir
-```
-
-Brauzer: **http://127.0.0.1:4173** — login, ilk girişdə şifrə rotasiyası məcburidir.
-Seed bir-dəfəlik şifrələri terminala çap edir (təhlükəsiz kanalla paylaş).
-
-Testlər: `npm --prefix server test` → 12/12 (auth, kataloq RBAC, sifariş+qərarlar,
-kilid, dashboard riyaziyyatı — `:memory:` DB ilə).
 
 ## Rollar
 

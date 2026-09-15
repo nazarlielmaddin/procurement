@@ -1751,23 +1751,21 @@ export default function Procurement({ me }) {
     ? warehouse.filter((w) => `${w.name} ${w.unit}`.toLowerCase().includes(whSearch.toLowerCase()))
     : warehouse;
 
-  // Silinmələr — flattened: hər sətir bir məhsul (№ | Tarix | Təyinat | Məhsul | Miqdar | Açıqlama).
-  const removalRows = [];
-  for (const r of removals) {
-    for (const ln of (r.items || [])) {
-      removalRows.push({
-        id: ln.id,
-        removal_id: r.id,
-        doc_no: r.doc_no,
-        destination: r.destination,
-        created_at: r.created_at,
-        product_name: ln.product_name,
-        unit: ln.unit,
-        qty: ln.qty,
-        note: ln.note,
-      });
-    }
-  }
+  // Silinmələr — sənəd səviyyəsi: eyni №-li silinmə 1 sətirdir.
+  // Məhsul adı və miqdar cədvəldə YOXDUR — yalnız kliklə açılan detallar pəncərəsindədir.
+  const removalRows = removals.map((r) => {
+    const lineNotes = [...new Set((r.items || []).map((ln) => String(ln?.note || '').trim()).filter(Boolean))];
+    const headerNote = String(r.note || '').trim();
+    return {
+      id: r.id,
+      removal_id: r.id,
+      doc_no: r.doc_no,
+      destination: r.destination,
+      created_at: r.created_at,
+      count: (r.items || []).length,
+      note: headerNote || lineNotes.join(' · '),
+    };
+  });
 
   const WH_COLS = [
     { key: 'n', label: '№', width: '7%', cell: (r) => <span className="text-ink-faint tabular-nums">{r._n}</span> },
@@ -1776,12 +1774,11 @@ export default function Procurement({ me }) {
     { key: 'qty', label: 'Miqdarı', width: '20%', align: 'right', cell: (r) => <span className="tabular-nums font-semibold">{r.qty}</span> },
   ];
   const REM_COLS = [
-    { key: 'doc_no', label: '№', width: '7%', cell: (r) => <span className="font-mono font-bold">{r.doc_no}</span> },
-    { key: 'created_at', label: 'Tarix', width: '15%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
-    { key: 'destination', label: 'Təyinat', width: '14%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
-    { key: 'product_name', label: 'Məhsul', width: '32%', cell: (r) => <span className="block truncate">{r.product_name}</span> },
-    { key: 'qty', label: 'Miqdar', width: '12%', align: 'right', cell: (r) => <span className="tabular-nums font-semibold">{r.qty} {r.unit}</span> },
-    { key: 'note', label: 'Açıqlama', width: '20%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
+    { key: 'doc_no', label: '№', width: '8%', cell: (r) => <span className="font-mono font-bold">{r.doc_no}</span> },
+    { key: 'created_at', label: 'Tarix', width: '18%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
+    { key: 'destination', label: 'Təyinat', width: '22%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
+    { key: 'count', label: 'Məhsul', width: '12%', align: 'right', cell: (r) => <span className="tabular-nums text-ink-muted">{r.count} məhsul</span> },
+    { key: 'note', label: 'Açıqlama', width: '40%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
   ];
   const whNumbered = whRows.map((w, i) => ({ ...w, _n: i + 1 }));
 
@@ -2159,7 +2156,7 @@ export default function Procurement({ me }) {
                         <Minus size={12} strokeWidth={2.5} />
                       </span>
                       <span className="text-[13px] font-bold">Silinmələr</span>
-                      <span className="text-[11px] text-ink-faint tabular-nums font-semibold">{removalRows.length} sətir</span>
+                      <span className="text-[11px] text-ink-faint tabular-nums font-semibold">{removals.length} silinmə</span>
                     </div>
                     <div className="ml-auto">
                       <button onClick={() => { setRemovalErr(''); setRemovalOpen(true); }}

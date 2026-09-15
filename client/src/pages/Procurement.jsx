@@ -1776,8 +1776,8 @@ export default function Procurement({ me }) {
   const REM_COLS = [
     { key: 'doc_no', label: '№', width: '8%', cell: (r) => <span className="font-mono font-bold">{r.doc_no}</span> },
     { key: 'created_at', label: 'Tarix', width: '18%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
-    { key: 'destination', label: 'Təyinat', width: '22%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
-    { key: 'count', label: 'Məhsul', width: '12%', align: 'right', cell: (r) => <span className="tabular-nums text-ink-muted">{r.count} məhsul</span> },
+    { key: 'destination', label: 'Müştəri', width: '22%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
+    { key: 'count', label: 'Məhsul', width: '12%', cell: (r) => <span className="tabular-nums text-ink-muted">{r.count} məhsul</span> },
     { key: 'note', label: 'Açıqlama', width: '40%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
   ];
   const whNumbered = whRows.map((w, i) => ({ ...w, _n: i + 1 }));

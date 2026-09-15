@@ -863,7 +863,7 @@ function OrderDrawer({ orderId, me, onClose, onChanged }) {
               </div>
             )}
 
-            <Comments orderId={orderId} me={me} comments={data.comments} />
+            {me?.proc_role !== 'storekeeper' && <Comments orderId={orderId} me={me} comments={data.comments} />}
 
             <div className="proc-card p-4">
               <div className="proc-card-title"><History size={15} color={EM} /> Tarixçə</div>
@@ -964,7 +964,6 @@ function RemovalComments({ removalId, me }) {
 // redaktədə başlığa köçürülür ki, məlumat itməsin.
 function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
   const qc = useQueryClient();
-  const isBoss = me?.proc_role === 'boss';
   const { data, isLoading } = useQuery({
     queryKey: ['proc', 'removal', removalId],
     queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}`),
@@ -1199,10 +1198,10 @@ function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
               </table>
             </div>
             <RemovalComments removalId={removalId} me={me} />
-            {isBoss && (removal.status || 'pending') === 'pending' && (
+            {(removal.status || 'pending') === 'pending' && (
               <div className="proc-card p-4 flex flex-wrap items-center gap-2">
                 <Check size={15} color={EM} />
-                <span className="text-[12px] text-ink-muted">Yoxlayıb təsdiqləyin — stok artıq azalıb, status yalnız iz üçündür.</span>
+                <span className="text-[12px] text-ink-muted">Təhvil Təslim aktı imzalanıbsa təsdiq edin.</span>
                 <button onClick={() => approve.mutate()} disabled={approve.isPending}
                   className="proc-btn ml-auto inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] disabled:opacity-50"
                   style={{ boxShadow: `0 10px 22px -10px ${EM}88` }}>
@@ -1525,7 +1524,10 @@ function Dashboard({ dash }) {
 
 export default function Procurement({ me }) {
   const isBoss = me?.proc_role === 'boss';
-  const [section, setSection] = useState('panel');
+  const isStorekeeper = me?.proc_role === 'storekeeper'; // Anbardar: Anbar + 1C full, sifarişlərdə təsdiqlənmişlərə baxış
+  // Anbardar yalnız öz bölmələrini görür (Panel/Kataloq gizlidir).
+  const visibleSections = isStorekeeper ? SECTIONS.filter((s) => ['warehouse', '1c', 'orders'].includes(s.key)) : SECTIONS;
+  const [section, setSection] = useState(isStorekeeper ? 'warehouse' : 'panel');
   const [navOpen, setNavOpen] = useState(true);
   const [mobileNav, setMobileNav] = useState(false);
   const [search, setSearch] = useState('');
@@ -1547,16 +1549,18 @@ export default function Procurement({ me }) {
   const [removalErr, setRemovalErr] = useState('');
   const whFileRef = useRef(null);
   const [whImporting, setWhImporting] = useState(false);
-  const active = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
+  const active = visibleSections.find((s) => s.key === section) || visibleSections[0];
   const qc = useQueryClient();
 
-  const { data: dash } = useQuery({ queryKey: ['proc', 'dashboard'], queryFn: () => api.get('/procurement/dashboard') });
+  const { data: dash } = useQuery({ queryKey: ['proc', 'dashboard'], queryFn: () => api.get('/procurement/dashboard'), enabled: !isStorekeeper });
   // Single source of truth per tab: orders query vs catalog query (same
   // endpoint, no duplicate fetch — display and search read the same rows).
+  // Anbardar sifarişlərdə həmişə təsdiqlənmişləri görür (filtr serverdə də məcburidir).
+  const orderStatus = section === 'orders' ? (isStorekeeper ? 'approved' : statusFilter) : '';
   const listQ = useQuery({
     queryKey: ['proc', section, statusFilter, firmFilter],
     queryFn: () => api.get(active.endpoint
-      + (section === 'orders' && statusFilter ? `?status=${statusFilter}` : '')
+      + (section === 'orders' && orderStatus ? `?status=${orderStatus}` : '')
       + (section === 'catalog' && firmFilter ? `?firm=${encodeURIComponent(firmFilter)}` : '')),
     enabled: !!active.endpoint,
   });
@@ -1933,7 +1937,7 @@ export default function Procurement({ me }) {
           </div>
         )}
         <nav className="flex-1 overflow-y-auto pl-1 pr-2 py-2 space-y-0.5 proc-scroll">
-          {SECTIONS.map((s) => {
+          {visibleSections.map((s) => {
             const on = s.key === section;
             return (
               <button key={s.key} onClick={() => { setSection(s.key); setMobileNav(false); }} title={s.label}
@@ -1952,7 +1956,7 @@ export default function Procurement({ me }) {
               </span>
               <span className="min-w-0 flex-1 leading-tight">
                 <span className="block truncate text-[11px] font-bold text-ink">{me?.full_name}</span>
-                <span className={`proc-role mt-0.5 ${isBoss ? 'proc-role--boss' : 'proc-role--spec'}`}>{isBoss ? 'BOSS' : 'SPECIALIST'}</span>
+                <span className={`proc-role mt-0.5 ${isBoss ? 'proc-role--boss' : 'proc-role--spec'}`}>{isBoss ? 'BOSS' : isStorekeeper ? 'ANBARDAR' : 'SPECIALIST'}</span>
               </span>
               <button onClick={logout} title="Çıxış" className="shrink-0 rounded-lg p-1.5 text-ink-faint hover:bg-elevated hover:text-ink"><LogOut size={15} /></button>
             </div>
@@ -1993,7 +1997,7 @@ export default function Procurement({ me }) {
                     {firms.map((f) => <option key={f} value={f}>{f}</option>)}
                   </select>
                 )}
-                {section === 'orders' && (
+                {section === 'orders' && !isStorekeeper && (
                   <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
                     className="rounded-lg border border-line bg-input px-2.5 py-2 text-[12px] outline-none focus:border-[var(--accent)]">
                     <option value="">Hamısı</option>
@@ -2003,7 +2007,7 @@ export default function Procurement({ me }) {
                     <option value="rejected">Rədd</option>
                   </select>
                 )}
-                {section === 'orders' && !isBoss &&                 <button onClick={() => setEditing({})} className="proc-btn inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Yeni sifariş</button>}
+                {section === 'orders' && !isBoss && !isStorekeeper &&                 <button onClick={() => setEditing({})} className="proc-btn inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Yeni sifariş</button>}
                 {section === 'warehouse' && (
                   <>
                     <input ref={whFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleWarehouseFile} />
@@ -2050,8 +2054,8 @@ export default function Procurement({ me }) {
             ? <SkeletonTable />
             : pageRows.length === 0 ? (
               <EmptyState icon={ShoppingCart} title={search || statusFilter ? 'Axtarışa uyğun sifariş yoxdur' : 'Hələ sifariş yoxdur'}
-                hint={search || statusFilter ? 'Filtrləri təmizləyib yenidən cəhd edin' : (!isBoss ? 'İlk təchizat tələbini yaratmaq üçün düyməyə basın' : 'Specialistlər sifariş yaratdıqca burada görünəcək')}
-                action={!isBoss && !search && !statusFilter ? (
+                hint={search || statusFilter ? 'Filtrləri təmizləyib yenidən cəhd edin' : (isStorekeeper ? 'Təsdiqlənmiş sifarişlər burada görünəcək' : (!isBoss ? 'İlk təchizat tələbini yaratmaq üçün düyməyə basın' : 'Specialistlər sifariş yaratdıqca burada görünəcək'))}
+                action={!isBoss && !isStorekeeper && !search && !statusFilter ? (
                   <button onClick={() => setEditing({})} className="proc-btn proc-btn-grad inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px]" style={{ boxShadow: `0 10px 22px -10px ${EM}88` }}><Plus size={15} /> Yeni sifariş</button>
                 ) : null} />
             ) : (
@@ -2311,20 +2315,23 @@ function Login({ onDone }) {
     catch (e) { setErr(e?.message || 'Giriş alınmadı'); setBusy(null); }
   };
   const bosses = (users || []).filter((u) => u.proc_role === 'boss');
-  const specs = (users || []).filter((u) => u.proc_role !== 'boss');
+  const specs = (users || []).filter((u) => u.proc_role === 'procurement_specialist');
+  const keepers = (users || []).filter((u) => u.proc_role === 'storekeeper');
   const card = (u, label) => {
     const boss = u.proc_role === 'boss';
-    const accent = boss ? EM : BLUE;
+    const keeper = u.proc_role === 'storekeeper';
+    const accent = boss ? EM : keeper ? AMBER : BLUE;
+    const roleLabel = boss ? 'BOSS' : keeper ? 'ANBARDAR' : 'SPECIALIST';
     return (
       <button key={u.login} onClick={() => enter(u.login)} disabled={busy !== null}
         className="proc-card hov group flex w-full items-center gap-3 p-3 text-left disabled:opacity-60">
         <span className="grid size-11 shrink-0 place-items-center rounded-xl text-[12px] font-black text-white" style={{ background: `linear-gradient(135deg, ${accent}, ${boss ? BLUE : VIOLET})` }}>
-          {boss ? 'B' : 'S'}
+          {boss ? 'B' : keeper ? 'A' : 'S'}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-bold">{label}</span>
           <span className={`proc-role mt-0.5 ${boss ? 'proc-role--boss' : 'proc-role--spec'}`}>
-            {boss ? 'BOSS' : 'SPECIALIST'}
+            {roleLabel}
           </span>
         </span>
         <span className="proc-btn shrink-0 rounded-lg px-3 py-2 text-[12px] transition group-hover:brightness-110" style={{ background: `linear-gradient(135deg, ${accent}, ${BLUE})` }}>
@@ -2362,6 +2369,12 @@ function Login({ onDone }) {
             <>
               <div className="proc-label" style={{ marginBottom: 8, marginTop: 20 }}>Mütəxəssislər</div>
               <div className="space-y-2.5">{specs[0] && card(specs[0], 'Specialist')}</div>
+            </>
+          )}
+          {keepers.length > 0 && (
+            <>
+              <div className="proc-label" style={{ marginBottom: 8, marginTop: 20 }}>Anbar</div>
+              <div className="space-y-2.5">{keepers[0] && card(keepers[0], 'Anbardar')}</div>
             </>
           )}
         </div>

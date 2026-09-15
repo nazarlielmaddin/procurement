@@ -134,6 +134,33 @@ function migrate(pdb) {
     pdb.exec("ALTER TABLE stock_removals ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
   }
 
+  // ── Anbardar rolu: proc_role CHECK-ini köhnə DB-lərdə genişləndir ──
+  // CHECK table-constraint-dir, ALTER ilə dəyişmir — cədvəl məlumatla birlikdə
+  // yenidən qurulur (yuxarıdakı price_catalog nümunəsi kimi).
+  const userSql = pdb.prepare("SELECT sql FROM sqlite_master WHERE name = 'users'").get()?.sql || '';
+  if (userSql && !userSql.includes('storekeeper')) {
+    pdb.exec(`PRAGMA foreign_keys = OFF;
+      BEGIN;
+      CREATE TABLE users_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        full_name TEXT NOT NULL,
+        login TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        proc_role TEXT NOT NULL CHECK (proc_role IN ('procurement_specialist', 'boss', 'storekeeper')),
+        proc_access INTEGER NOT NULL DEFAULT 1,
+        sections_csv TEXT NOT NULL DEFAULT 'orders,catalog,dashboard,warehouse,1c',
+        appina_user_id TEXT NULL UNIQUE,
+        must_rotate INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );
+      INSERT INTO users_new (id, full_name, login, password_hash, proc_role, proc_access, sections_csv, appina_user_id, must_rotate, created_at)
+        SELECT id, full_name, login, password_hash, proc_role, proc_access, sections_csv, appina_user_id, must_rotate, created_at FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+      COMMIT;
+      PRAGMA foreign_keys = ON;`);
+  }
+
   // ── Silinmə kommentləri (köhnə DB-lər üçün) ──
   pdb.exec(`CREATE TABLE IF NOT EXISTS removal_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

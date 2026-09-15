@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   full_name TEXT NOT NULL,
   login TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  proc_role TEXT NOT NULL CHECK (proc_role IN ('procurement_specialist', 'boss')),
+  proc_role TEXT NOT NULL CHECK (proc_role IN ('procurement_specialist', 'boss', 'storekeeper')),
   proc_access INTEGER NOT NULL DEFAULT 1,
   sections_csv TEXT NOT NULL DEFAULT 'orders,catalog,dashboard,warehouse,1c',
   -- Appina-integration seam: maps to the future Appina user id. NULL = standalone.

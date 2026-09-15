@@ -2,7 +2,7 @@
 // CRUD + dedicated order/decision routes + server-side dashboard aggregates).
 import { Router } from 'express';
 import { procDb } from '../lib/proc_db.js';
-import { authenticate, requireProcurement, requireBoss, isBoss, procSectionsFor, loadOrder, ensureVisible, ensureOwnerPending } from '../lib/proc_access.js';
+import { authenticate, requireProcurement, requireBoss, isBoss, isStorekeeper, denyStorekeeper, procSectionsFor, loadOrder, ensureVisible, ensureOwnerPending } from '../lib/proc_access.js';
 import { HttpError, ah, round2, str, num, normInternalId, effectiveQty, orderTotals, statusTotals, logDecision, extractMentions } from '../lib/proc_helpers.js';
 
 const r = Router();
@@ -36,7 +36,7 @@ function prepCatalog(body) {
   return data;
 }
 
-r.get('/catalog', (req, res) => {
+r.get('/catalog', denyStorekeeper, (req, res) => {
   const q = str(req.query.q, 120);
   const firmFilter = str(req.query.firm, 60).replace(/\s+/g, ' ').trim();
   const d = procDb();
@@ -180,13 +180,19 @@ r.get('/orders', (req, res) => {
   let sql = `SELECT o.*, u.full_name AS owner_name FROM orders o JOIN users u ON u.id = o.requester_id`;
   const conds = [];
   const args = [];
-  if (!isBoss(req.user)) {
-    conds.push('o.requester_id = ?');
-    args.push(req.user.id);
-  }
-  if (status && allowed.includes(status)) {
+  if (isStorekeeper(req.user)) {
+    // Anbardar yalnız təsdiqlənmiş sifarişləri görür (sorğu parametri keçərsizdir).
     conds.push('o.status = ?');
-    args.push(status);
+    args.push('approved');
+  } else {
+    if (!isBoss(req.user)) {
+      conds.push('o.requester_id = ?');
+      args.push(req.user.id);
+    }
+    if (status && allowed.includes(status)) {
+      conds.push('o.status = ?');
+      args.push(status);
+    }
   }
   if (conds.length) sql += ' WHERE ' + conds.join(' AND ');
   // Status sırası: Gözləyir → Qismən təsdiq → Təsdiqlənib → Rədd edilib, sonra tarix DESC
@@ -194,7 +200,7 @@ r.get('/orders', (req, res) => {
   res.json({ items: withTotals(d.prepare(sql).all(...args)) });
 });
 
-r.post('/orders', ah(async (req, res) => {
+r.post('/orders', denyStorekeeper, ah(async (req, res) => {
   const { requester_name, reason, items } = req.body || {};
   const rn = str(requester_name, 200);
   const rs = str(reason, 2000);
@@ -259,7 +265,7 @@ r.get('/orders/:id', (req, res) => {
 });
 
 // Owner-specialist edit of a PENDING order: replace-items (mirrors PUT /omid-alis/:id).
-r.put('/orders/:id', ah(async (req, res) => {
+r.put('/orders/:id', denyStorekeeper, ah(async (req, res) => {
   const order = loadOrder(req.params.id);
   if (isBoss(req.user)) return res.status(403).json({ error: 'boss_uses_decision' });
   const denied = ensureOwnerPending(req.user, order);
@@ -328,7 +334,7 @@ r.delete('/orders/:id', requireBoss, (req, res) => {
 // Threaded comments: body mütləqdir, parent_id (reply) opsionaldır —
 // yalnız EYNİ sifarişin comment-inə cavab vermək olar (cross-order → 400).
 // @mention-lər serverdə body-dən çıxarılıb mentions_csv-ə yazılır.
-r.post('/orders/:id/comments', (req, res) => {
+r.post('/orders/:id/comments', denyStorekeeper, (req, res) => {
   const order = loadOrder(req.params.id);
   const denied = ensureVisible(req.user, order);
   if (denied) return res.status(denied.status).json({ error: denied.error });
@@ -610,9 +616,9 @@ r.delete('/warehouse/removals/:id', (req, res) => {
 });
 
 // POST /api/procurement/warehouse/removals/:id/approve — silinməni təsdiqlə.
-// Boss-only (sifariş qərarı kimi). pending → approved. Stoka toxunmur —
-// stok silinmə yaradılanda artıq azalıb. Təkrar təsdiq → 409.
-r.post('/warehouse/removals/:id/approve', requireBoss, (req, res) => {
+// Hər rol təsdiqləyə bilər (boss + specialist + anbardar). pending → approved.
+// Stoka toxunmur — stok silinmə yaradılanda artıq azalıb. Təkrar təsdiq → 409.
+r.post('/warehouse/removals/:id/approve', (req, res) => {
   const d = procDb();
   const removal = d.prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(req.params.id));
   if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
@@ -646,9 +652,9 @@ r.post('/warehouse/removals/:id/comments', (req, res) => {
   res.status(201).json({ id: Number(info.lastInsertRowid) });
 });
 
-// ── Dashboard (server aggregates; both roles) ──
+// ── Dashboard (server aggregates; boss + specialist — anbardar görmür) ──
 // Volume rule: status IN (approved, partially_approved), value = effectiveQty × snapshot.
-r.get('/dashboard', (req, res) => {
+r.get('/dashboard', denyStorekeeper, (req, res) => {
   const d = procDb();
   const items = d.prepare(
     `SELECT i.*, o.status, substr(o.decided_at, 1, 7) AS month

@@ -38,6 +38,14 @@ export function authenticate(req, res, next) {
 }
 
 export const isBoss = (user) => user?.proc_role === 'boss';
+export const isStorekeeper = (user) => user?.proc_role === 'storekeeper';
+
+// Anbardar anbar xaricində read-only-dir: Anbar + 1C full, sifarişlərdə yalnız
+// təsdiqlənmişlərə baxış. Kataloq/dashboard/sifariş-yazma route-larında qapı.
+export function denyStorekeeper(req, res, next) {
+  if (isStorekeeper(req.user)) return res.status(403).json({ error: 'storekeeper_readonly' });
+  return next();
+}
 
 // Section seam for the future Appina sync (mirrors finance_sections CSV).
 export function procSectionsFor(user) {
@@ -58,14 +66,19 @@ export function requireBoss(req, res, next) {
   return res.status(403).json({ error: 'boss_only' });
 }
 
-// Visibility: boss sees everything, specialists only their own orders.
+// Visibility: boss sees everything, specialists only their own orders,
+// storekeeper only approved orders (view-only).
 export function loadOrder(orderId) {
   return procDb().prepare('SELECT * FROM orders WHERE id = ?').get(Number(orderId)) || null;
 }
 
 export function ensureVisible(user, order) {
   if (!order) return { status: 404, error: 'order_not_found' };
-  if (isBoss(user) || order.requester_id === user.id) return null;
+  if (isBoss(user)) return null;
+  if (isStorekeeper(user)) {
+    return order.status === 'approved' ? null : { status: 403, error: 'not_approved_order' };
+  }
+  if (order.requester_id === user.id) return null;
   return { status: 403, error: 'not_your_order' };
 }
 

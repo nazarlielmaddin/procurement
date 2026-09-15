@@ -5,6 +5,7 @@ const KEY = 'appina-procurement-demo-v1';
 const users = [
   { id: 1, full_name: 'Boss istifadəçi', login: 'boss', proc_role: 'boss', proc_access: 1 },
   { id: 2, full_name: 'Specialist istifadəçi', login: 'specialist', proc_role: 'procurement_specialist', proc_access: 1 },
+  { id: 3, full_name: 'Anbardar', login: 'anbardar', proc_role: 'storekeeper', proc_access: 1 },
 ];
 const catalogSeed = [
   ['MON-24FHD', 'Monitor 24" FHD', 'əd', 280, 'IMZA'],
@@ -52,6 +53,10 @@ function read() {
 function write(state) { localStorage.setItem(KEY, JSON.stringify(state)); return state; }
 function result(data) { return Promise.resolve(data); }
 function currentUser(state) { return users.find((u) => u.id === state.me) || users[1]; }
+// Anbardar demoda da read-only-dir: kataloq/panel/sifariş-yazma qapalıdır.
+function denyKeeper(state) {
+  if (currentUser(state)?.proc_role === 'storekeeper') throw Object.assign(new Error('storekeeper_readonly'), { status: 403 });
+}
 function totals(order) {
   return order.items.reduce((s, i) => s + Number(i.unit_price || 0) * Number(i.requested_qty || 0), 0);
 }
@@ -77,20 +82,22 @@ async function mock(method, path, body) {
   }
   if (path === '/auth/login') { const user = users.find((u) => u.login === body?.login); if (!user) throw Object.assign(new Error('unknown_user'), { status: 401 }); state.me = user.id; write(state); return result({ ok: true, user }); }
   if (path === '/auth/logout') { state.me = null; write(state); return result({ ok: true }); }
-  if (cleanPath === '/procurement/catalog' && method === 'GET') return result({ items: state.catalog });
+  if (cleanPath === '/procurement/catalog' && method === 'GET') { denyKeeper(state); return result({ items: state.catalog }); }
   if (cleanPath === '/procurement/catalog' && method === 'POST') {
+    denyKeeper(state);
     const row = { ...body, id: state.nextCatalog++, sell_price: body.buy_price };
     state.catalog.push(row); write(state); return result({ item: row });
   }
-  if (cleanPath === '/procurement/catalog' && method === 'PUT') return result({ ok: true });
+  if (cleanPath === '/procurement/catalog' && method === 'PUT') { denyKeeper(state); return result({ ok: true }); }
   const catalogId = cleanPath.match(/^\/procurement\/catalog\/(\d+)$/);
   if (catalogId && method === 'PUT') {
+    denyKeeper(state);
     const i = state.catalog.findIndex((x) => x.id === Number(catalogId[1]));
     state.catalog[i] = { ...state.catalog[i], ...body, sell_price: body.buy_price }; write(state); return result({ item: state.catalog[i] });
   }
-  if (catalogId && method === 'DELETE') { state.catalog = state.catalog.filter((x) => x.id !== Number(catalogId[1])); write(state); return result({ ok: true }); }
-  if (cleanPath === '/procurement/catalog/replace' && method === 'POST') { state.catalog = body.items.map((x, i) => ({ ...x, id: i + 1 })); write(state); return result({ ok: true }); }
-  if (cleanPath === '/procurement/dashboard') return result(dashboard(state));
+  if (catalogId && method === 'DELETE') { denyKeeper(state); state.catalog = state.catalog.filter((x) => x.id !== Number(catalogId[1])); write(state); return result({ ok: true }); }
+  if (cleanPath === '/procurement/catalog/replace' && method === 'POST') { denyKeeper(state); state.catalog = body.items.map((x, i) => ({ ...x, id: i + 1 })); write(state); return result({ ok: true }); }
+  if (cleanPath === '/procurement/dashboard') { denyKeeper(state); return result(dashboard(state)); }
   // ── Anbar (demo): same shapes as the server warehouse API ──
   if (cleanPath === '/procurement/warehouse' && method === 'GET') return result({ items: state.warehouse });
   if (cleanPath === '/procurement/warehouse' && method === 'POST') {
@@ -212,7 +219,6 @@ async function mock(method, path, body) {
   }
   const remApprove = cleanPath.match(/^\/procurement\/warehouse\/removals\/(\d+)\/approve$/);
   if (remApprove && method === 'POST') {
-    if (currentUser(state).proc_role !== 'boss') throw Object.assign(new Error('boss_only'), { status: 403 });
     const r = state.removals.find((x) => x.id === Number(remApprove[1]));
     if (!r) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
     if (r.status === 'approved') throw Object.assign(new Error('Silinmə artıq təsdiqlənib'), { status: 409 });
@@ -252,20 +258,32 @@ async function mock(method, path, body) {
     return result({ id: c.id });
   }
   if (path.startsWith('/procurement/orders/') && path.endsWith('/mentionables')) return result({ users });
-  if (path.startsWith('/procurement/orders/') && !path.endsWith('/decision') && !path.endsWith('/reopen') && method === 'GET') return result(detail(state, path.split('/')[3]));
-  if (cleanPath === '/procurement/orders' && method === 'GET') return result({ orders: state.orders });
+  if (path.startsWith('/procurement/orders/') && !path.endsWith('/decision') && !path.endsWith('/reopen') && method === 'GET') {
+    const d = detail(state, path.split('/')[3]);
+    if (currentUser(state)?.proc_role === 'storekeeper' && d.order?.status !== 'approved') {
+      throw Object.assign(new Error('not_approved_order'), { status: 403 });
+    }
+    return result(d);
+  }
+  if (cleanPath === '/procurement/orders' && method === 'GET') {
+    const list = currentUser(state)?.proc_role === 'storekeeper'
+      ? state.orders.filter((o) => o.status === 'approved')
+      : state.orders;
+    return result({ orders: list });
+  }
   if (cleanPath === '/procurement/orders' && method === 'POST') {
+    denyKeeper(state);
     const order = { ...body, id: state.nextOrder++, status: 'pending', created_at: new Date().toISOString(), requester_name: currentUser(state).full_name, comments: [], history: [], items: body.items || [] };
     state.orders.unshift(order); write(state); return result({ order });
   }
-  if (path.match(/^\/procurement\/orders\/\d+$/) && method === 'PUT') { const id = Number(path.split('/')[3]); const i = state.orders.findIndex((o) => o.id === id); state.orders[i] = { ...state.orders[i], ...body, items: body.items || state.orders[i].items }; write(state); return result({ order: state.orders[i] }); }
-  if (path.match(/^\/procurement\/orders\/\d+$/) && method === 'DELETE') { state.orders = state.orders.filter((o) => o.id !== Number(path.split('/')[3])); write(state); return result({ ok: true }); }
+  if (path.match(/^\/procurement\/orders\/\d+$/) && method === 'PUT') { denyKeeper(state); const id = Number(path.split('/')[3]); const i = state.orders.findIndex((o) => o.id === id); state.orders[i] = { ...state.orders[i], ...body, items: body.items || state.orders[i].items }; write(state); return result({ order: state.orders[i] }); }
+  if (path.match(/^\/procurement\/orders\/\d+$/) && method === 'DELETE') { denyKeeper(state); state.orders = state.orders.filter((o) => o.id !== Number(path.split('/')[3])); write(state); return result({ ok: true }); }
   const decision = path.match(/^\/procurement\/orders\/(\d+)\/decision$/);
-  if (decision) { const o = state.orders.find((x) => x.id === Number(decision[1])); o.status = body.decision; if (body.comment) o.comments.push({ body: body.comment, author_name: currentUser(state).full_name, created_at: new Date().toISOString() }); write(state); return result({ ok: true, order: o }); }
+  if (decision) { denyKeeper(state); const o = state.orders.find((x) => x.id === Number(decision[1])); o.status = body.decision; if (body.comment) o.comments.push({ body: body.comment, author_name: currentUser(state).full_name, created_at: new Date().toISOString() }); write(state); return result({ ok: true, order: o }); }
   const reopen = path.match(/^\/procurement\/orders\/(\d+)\/reopen$/);
-  if (reopen) { const o = state.orders.find((x) => x.id === Number(reopen[1])); o.status = 'pending'; write(state); return result({ ok: true, order: o }); }
+  if (reopen) { denyKeeper(state); const o = state.orders.find((x) => x.id === Number(reopen[1])); o.status = 'pending'; write(state); return result({ ok: true, order: o }); }
   const comment = path.match(/^\/procurement\/orders\/(\d+)\/comments$/);
-  if (comment) { const o = state.orders.find((x) => x.id === Number(comment[1])); o.comments.push({ body: body.body, author_name: currentUser(state).full_name, created_at: new Date().toISOString() }); write(state); return result({ ok: true }); }
+  if (comment) { denyKeeper(state); const o = state.orders.find((x) => x.id === Number(comment[1])); o.comments.push({ body: body.body, author_name: currentUser(state).full_name, created_at: new Date().toISOString() }); write(state); return result({ ok: true }); }
   return result({ ok: true });
 }
 

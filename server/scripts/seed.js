@@ -10,6 +10,8 @@ const SEEDS = [
   { full_name: 'Nəcəf Əsgərov', login: 'necef.esgerov', proc_role: 'procurement_specialist' },
   { full_name: 'Fərəc Fərəci', login: 'ferec.fereci', proc_role: 'boss' },
   { full_name: 'Fuad Amirov', login: 'fuad.amirov', proc_role: 'boss' },
+  // Anbardar: yalnız Anbar + 1C full, sifarişlərdə təsdiqlənmişlərə baxış.
+  { full_name: 'Anbardar', login: 'anbardar', proc_role: 'storekeeper', sections_csv: 'warehouse,1c,orders' },
 ];
 
 const DEMO_CATALOG = [
@@ -33,6 +35,13 @@ for (const s of SEEDS) {
     // No passwords: tap-to-enter. Placeholder hash kept for the NOT NULL column.
     db.prepare('UPDATE users SET full_name = ?, password_hash = ?, proc_role = ?, proc_access = 1, must_rotate = 0 WHERE id = ?')
       .run(s.full_name, 'nopw', s.proc_role, existing.id);
+    // Anbardar bölmələri həmişə məhdud saxlanılır (köhnə geniş csv-ni daraldır).
+    if (s.sections_csv) {
+      db.prepare('UPDATE users SET sections_csv = ? WHERE id = ?').run(s.sections_csv, existing.id);
+    }
+  } else if (s.sections_csv) {
+    db.prepare('INSERT INTO users (full_name, login, password_hash, proc_role, sections_csv, must_rotate) VALUES (?, ?, ?, ?, ?, 0)')
+      .run(s.full_name, s.login, 'nopw', s.proc_role, s.sections_csv);
   } else {
     db.prepare('INSERT INTO users (full_name, login, password_hash, proc_role, must_rotate) VALUES (?, ?, ?, ?, 0)')
       .run(s.full_name, s.login, 'nopw', s.proc_role);

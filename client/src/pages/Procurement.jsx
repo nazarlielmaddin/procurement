@@ -1330,6 +1330,55 @@ function WarehouseForm({ onClose, onSave, saving }) {
   );
 }
 
+// ── Anbar: stok redaktəsi. Boss/specialist full (ad + vahid + miqdar);
+// anbardar yalnız miqdarı manual ARTIRA bilər (ad/vahid bağlıdır, azaltmaq olmaz).
+function WarehouseEditForm({ row, canFull, onClose, onSave, saving }) {
+  const [name, setName] = useState(row?.name || '');
+  const [unit, setUnit] = useState(row?.unit || 'ədəd');
+  const [qty, setQty] = useState(row?.qty ?? '');
+  const [err, setErr] = useState('');
+  const submit = () => {
+    setErr('');
+    if (canFull) {
+      if (!name.trim()) { setErr('Məhsul adı mütləqdir'); return; }
+      if (String(qty).trim() === '' || !(Number(qty) >= 0)) { setErr('Miqdarı daxil edin (0 və ya böyük)'); return; }
+      onSave({ name: name.trim(), unit: unit.trim() || 'ədəd', qty: Number(qty) });
+    } else {
+      if (String(qty).trim() === '' || !(Number(qty) > Number(row.qty))) {
+        setErr(`Miqdar yalnız artırıla bilər (hazırkı: ${row.qty} ${row.unit})`);
+        return;
+      }
+      onSave({ qty: Number(qty) });
+    }
+  };
+  return (
+    <Modal onClose={onClose} maxWidth={480}>
+      <div className="proc-modal-hdr">
+        <span className="proc-accent-bar" />
+        <h3 className="flex items-center gap-2 text-[14px] font-bold">
+          <Warehouse size={18} color={EM} />
+          {canFull ? 'Məhsulu redaktə et' : 'Miqdarı artır'}
+        </h3>
+        <button onClick={onClose} className="rounded-lg p-1.5 text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
+      </div>
+      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Malın adı *</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} disabled={!canFull} className="proc-input disabled:opacity-50" /></label>
+        <label className="text-[13px] block"><span className="proc-label">Ölçü vahidi</span>
+          <input value={unit} onChange={(e) => setUnit(e.target.value)} disabled={!canFull} className="proc-input disabled:opacity-50" /></label>
+        <label className="text-[13px] block"><span className="proc-label">Miqdarı *</span>
+          <input type="number" step="any" min={canFull ? 0 : row.qty} value={qty} onChange={(e) => setQty(e.target.value)} className="proc-input tabular-nums" /></label>
+      </div>
+      {!canFull && <p className="px-5 pb-1 text-[11px] text-ink-faint">Anbardar yalnız miqdarı artıra bilər — azaltmaq olmaz.</p>}
+      {err && <p className="px-5 pb-1 text-[12px] text-[var(--status-red)]">{err}</p>}
+      <div className="proc-modal-ftr">
+        <button onClick={onClose} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
+        <button onClick={submit} disabled={saving} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">{saving ? '...' : 'Yadda saxla'}</button>
+      </div>
+    </Modal>
+  );
+}
+
 const blankRemovalLine = () => ({ warehouse_item_id: '', qty: '' });
 
 // ── Silinmə yarat: № + Təyinat/obyekt + 1 açıqlama + bir neçə məhsul (məhsul + miqdar) ──
@@ -1545,6 +1594,7 @@ export default function Procurement({ me }) {
   // ── Anbar state ──
   const [whSearch, setWhSearch] = useState('');
   const [whAdding, setWhAdding] = useState(false);
+  const [whEditing, setWhEditing] = useState(null); // stok sətri = redaktə/artsır
   const [removalOpen, setRemovalOpen] = useState(false);
   const [openRemoval, setOpenRemoval] = useState(null); // id = drawer açıq
   const [removalErr, setRemovalErr] = useState('');
@@ -1645,6 +1695,16 @@ export default function Procurement({ me }) {
     mutationFn: (form) => api.post('/procurement/warehouse/removals', form),
     onSuccess: () => { setRemovalOpen(false); setRemovalErr(''); refetchAll(); },
     onError: (e) => setRemovalErr(e?.message || 'Silinmə yaradılmadı'),
+  });
+  const saveWhEdit = useMutation({
+    mutationFn: (form) => api.put(`/procurement/warehouse/${whEditing.id}`, form),
+    onSuccess: () => { setWhEditing(null); refetchAll(); },
+    onError: (e) => window.alert(e?.message || 'Yadda saxlanmadı'),
+  });
+  const delWh = useMutation({
+    mutationFn: (row) => api.del(`/procurement/warehouse/${row.id}`),
+    onSuccess: refetchAll,
+    onError: (e) => window.alert(e?.message || 'Silinmədi'),
   });
 
   // Anbar export: hazırkı anbar Excel formatında (Malın adı | Ölçü vahidi | Miqdarı).
@@ -2011,14 +2071,18 @@ export default function Procurement({ me }) {
                 {section === 'orders' && !isBoss && !isStorekeeper &&                 <button onClick={() => setEditing({})} className="proc-btn inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Yeni sifariş</button>}
                 {section === 'warehouse' && (
                   <>
-                    <input ref={whFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleWarehouseFile} />
-                    <button onClick={() => setWhAdding(true)} className="proc-btn inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Əlavə et</button>
-                    <button onClick={() => whFileRef.current?.click()} disabled={whImporting || replaceWh.isPending}
-                      title="Excel faylı seçin (Malın adı | Ölçü vahidi | Miqdarı) — bütün anbar əvəz olunur"
-                      className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110 disabled:opacity-50"
-                      style={{ borderColor: `${AMBER}80`, background: `${AMBER}1a`, color: AMBER }}>
-                      <Upload size={15} /> {whImporting || replaceWh.isPending ? 'Yüklənir…' : 'Tam yeniləmə'}
-                    </button>
+                    {!isStorekeeper && (
+                      <>
+                        <input ref={whFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleWarehouseFile} />
+                        <button onClick={() => setWhAdding(true)} className="proc-btn inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Əlavə et</button>
+                        <button onClick={() => whFileRef.current?.click()} disabled={whImporting || replaceWh.isPending}
+                          title="Excel faylı seçin (Malın adı | Ölçü vahidi | Miqdarı) — bütün anbar əvəz olunur"
+                          className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110 disabled:opacity-50"
+                          style={{ borderColor: `${AMBER}80`, background: `${AMBER}1a`, color: AMBER }}>
+                          <Upload size={15} /> {whImporting || replaceWh.isPending ? 'Yüklənir…' : 'Tam yeniləmə'}
+                        </button>
+                      </>
+                    )}
                     <button onClick={handleWarehouseExport}
                       title="Hazırkı anbarı Excel-ə çıxar"
                       className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110"
@@ -2238,7 +2302,13 @@ export default function Procurement({ me }) {
                     <EmptyState icon={Warehouse} title={whSearch ? 'Axtarışa uyğun məhsul yoxdur' : 'Anbar boşdur'}
                       hint={whSearch ? 'Başqa ad yazın' : 'Excel-dən Tam yeniləmə edin və ya Əlavə et düyməsi ilə ilk məhsulu yaradın'} />
                   ) : (
-                    <Table columns={WH_COLS} rows={whNumbered} minWidth={640} />
+                    <Table columns={WH_COLS} rows={whNumbered} minWidth={640}
+                      rowActions={(r) => (<>
+                        <button onClick={() => setWhEditing(r)} className="p-1.5 rounded-lg hover:bg-elevated text-ink-faint hover:text-[var(--accent)]" title={isStorekeeper ? 'Miqdarı artır' : 'Redaktə'}><Pencil size={14} /></button>
+                        {!isStorekeeper && (
+                          <button onClick={() => { if (window.confirm(`"${r.name}" anbardan silinsin? Silinmə tarixçəsindəki sətirlər qalacaq.`)) delWh.mutate(r); }} className="p-1.5 rounded-lg hover:bg-elevated text-ink-faint hover:text-[var(--status-red)]" title="Sil"><Trash2 size={14} /></button>
+                        )}
+                      </>)} />
                   )}
                 </div>
                 <div>
@@ -2287,6 +2357,7 @@ export default function Procurement({ me }) {
             onSave={(form) => { setSaveErr(''); saveOrder.mutate(form); }} saving={saveOrder.isPending} serverErr={saveErr} />)}
       {catEditing && <CatalogForm row={catEditing.id ? catEditing : null} firms={firms} onClose={() => setCatEditing(null)} onSave={(f) => saveCat.mutate(f)} saving={saveCat.isPending} />}
       {whAdding && <WarehouseForm onClose={() => setWhAdding(false)} onSave={(f) => addWh.mutate(f)} saving={addWh.isPending} />}
+      {whEditing && <WarehouseEditForm row={whEditing} canFull={!isStorekeeper} onClose={() => setWhEditing(null)} onSave={(f) => saveWhEdit.mutate(f)} saving={saveWhEdit.isPending} />}
       {removalOpen && (
         <RemovalForm stock={warehouse}
           nextDocNo={String((removals.reduce((m, r) => Math.max(m, Number(r.doc_no) || 0), 0) || removals.length) + 1)}

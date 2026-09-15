@@ -374,8 +374,9 @@ r.get('/orders/:id/mentionables', (req, res) => {
 
 // ── Anbar (warehouse): Excel "anbar faktiki sayım" 1:1 ──
 // Malın adı | Ölçü vahidi | Miqdarı → name | unit | qty. Real CRUD +
-// persistent SQLite. Read: hamı; write: hamı (rol məhdudu yoxdur —
-// boss da, specialist də anbarla işləyir).
+// persistent SQLite. Read: hamı. Write: boss + specialist full;
+// anbardar yalnız mövcud malın sayını manual ARTIRA bilər (azaltmaq,
+// yeni mal, silmək, tam yeniləmə ona qapalıdır).
 function prepWarehouse(body) {
   const data = {};
   if (body.name !== undefined) data.name = str(body.name, 500);
@@ -391,7 +392,7 @@ r.get('/warehouse', (req, res) => {
   res.json({ items: items.filter((it) => `${it.name} ${it.unit}`.toLowerCase().includes(q)) });
 });
 
-r.post('/warehouse', (req, res) => {
+r.post('/warehouse', denyStorekeeper, (req, res) => {
   const data = prepWarehouse(req.body || {});
   if (!data.name) throw new HttpError(400, 'name_required', 'Məhsul adı mütləqdir');
   if (!data.unit) data.unit = 'ədəd';
@@ -409,6 +410,24 @@ r.post('/warehouse', (req, res) => {
 });
 
 r.put('/warehouse/:id', (req, res) => {
+  const d = procDb();
+  const row = d.prepare('SELECT * FROM warehouse_items WHERE id = ?').get(Number(req.params.id));
+  if (!row) return res.status(404).json({ error: 'product_not_found', message: 'Məhsul tapılmadı' });
+  // Anbardar: yalnız miqdar ARTIMI — ad/vahid toxunulmaz, azaltmaq olmaz.
+  if (isStorekeeper(req.user)) {
+    const keys = Object.keys(req.body || {});
+    if (keys.some((k) => k !== 'qty')) {
+      throw new HttpError(403, 'increase_only', 'Anbardar yalnız miqdarı artıra bilər');
+    }
+    const qty = num(req.body?.qty);
+    if (!Number.isFinite(qty)) throw new HttpError(400, 'qty_invalid', 'Miqdarı daxil edin');
+    if (qty <= Number(row.qty)) {
+      throw new HttpError(400, 'decrease_forbidden', `Miqdar yalnız artırıla bilər (hazırkı: ${row.qty} ${row.unit})`);
+    }
+    d.prepare('UPDATE warehouse_items SET qty = ?, updated_at = ? WHERE id = ?')
+      .run(qty, new Date().toISOString(), row.id);
+    return res.json({ ok: true, qty });
+  }
   const data = prepWarehouse(req.body || {});
   const keys = Object.keys(data).filter((k) => ['name', 'unit', 'qty'].includes(k));
   if (!keys.length) throw new HttpError(400, 'no_fields');
@@ -416,8 +435,8 @@ r.put('/warehouse/:id', (req, res) => {
     throw new HttpError(400, 'qty_invalid', 'Miqdar 0 və ya böyük olmalıdır');
   }
   try {
-    procDb().prepare(`UPDATE warehouse_items SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at = ? WHERE id = ?`)
-      .run(...keys.map((k) => data[k]), new Date().toISOString(), Number(req.params.id));
+    d.prepare(`UPDATE warehouse_items SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at = ? WHERE id = ?`)
+      .run(...keys.map((k) => data[k]), new Date().toISOString(), row.id);
     res.json({ ok: true });
   } catch (e) {
     if (String(e?.message).includes('UNIQUE')) throw new HttpError(409, 'duplicate_product', 'Bu məhsul artıq anbardadır (ad + vahid)');
@@ -425,11 +444,21 @@ r.put('/warehouse/:id', (req, res) => {
   }
 });
 
+// DELETE /api/procurement/warehouse/:id — stok malını sil (boss + specialist).
+// Silinmə tarixçəsi sağ qalır (sətirlər snapshot ad/vahid saxlayır).
+r.delete('/warehouse/:id', denyStorekeeper, (req, res) => {
+  const d = procDb();
+  const row = d.prepare('SELECT * FROM warehouse_items WHERE id = ?').get(Number(req.params.id));
+  if (!row) return res.status(404).json({ error: 'product_not_found', message: 'Məhsul tapılmadı' });
+  d.prepare('DELETE FROM warehouse_items WHERE id = ?').run(row.id);
+  res.json({ ok: true });
+});
+
 // POST /api/procurement/warehouse/replace — Tam yeniləmə (Excel import).
 // Body: { items: [{ name, unit, qty }] }. Bütün anbar əvəz olunur.
 // Silinmə tarixçəsi (stock_removal_items) sağ qalır
 // (warehouse_item_id ON DELETE SET NULL + snapshot ad/vahid).
-r.post('/warehouse/replace', (req, res) => {
+r.post('/warehouse/replace', denyStorekeeper, (req, res) => {
   const raw = req.body?.items;
   if (!Array.isArray(raw)) throw new HttpError(400, 'items_required');
   if (raw.length > 10000) throw new HttpError(400, 'too_many_items', 'Maksimum 10000 məhsul');

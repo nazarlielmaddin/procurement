@@ -101,6 +101,7 @@ async function mock(method, path, body) {
   // ── Anbar (demo): same shapes as the server warehouse API ──
   if (cleanPath === '/procurement/warehouse' && method === 'GET') return result({ items: state.warehouse });
   if (cleanPath === '/procurement/warehouse' && method === 'POST') {
+    denyKeeper(state);
     const name = String(body?.name || '').trim();
     const unit = String(body?.unit || '').trim() || 'ədəd';
     const qty = Number(body?.qty);
@@ -115,17 +116,34 @@ async function mock(method, path, body) {
   const whId = cleanPath.match(/^\/procurement\/warehouse\/(\d+)$/);
   if (whId && method === 'PUT') {
     const row = state.warehouse.find((x) => x.id === Number(whId[1]));
-    if (!row) throw Object.assign(new Error('Tapılmadı'), { status: 404 });
-    if (body?.name !== undefined) row.name = String(body.name).trim() || row.name;
-    if (body?.unit !== undefined) row.unit = String(body.unit).trim() || row.unit;
-    if (body?.qty !== undefined) {
-      const q = Number(body.qty);
-      if (!Number.isFinite(q) || q < 0) throw Object.assign(new Error('Miqdar yanlışdır'), { status: 400 });
+    if (!row) throw Object.assign(new Error('Məhsul tapılmadı'), { status: 404 });
+    if (currentUser(state)?.proc_role === 'storekeeper') {
+      const keys = Object.keys(body || {});
+      if (keys.some((k) => k !== 'qty')) throw Object.assign(new Error('Anbardar yalnız miqdarı artıra bilər'), { status: 403 });
+      const q = Number(body?.qty);
+      if (!Number.isFinite(q)) throw Object.assign(new Error('Miqdarı daxil edin'), { status: 400 });
+      if (q <= Number(row.qty)) throw Object.assign(new Error(`Miqdar yalnız artırıla bilər (hazırkı: ${row.qty} ${row.unit})`), { status: 400 });
       row.qty = q;
+    } else {
+      if (body?.name !== undefined) row.name = String(body.name).trim() || row.name;
+      if (body?.unit !== undefined) row.unit = String(body.unit).trim() || row.unit;
+      if (body?.qty !== undefined) {
+        const q = Number(body.qty);
+        if (!Number.isFinite(q) || q < 0) throw Object.assign(new Error('Miqdar yanlışdır'), { status: 400 });
+        row.qty = q;
+      }
     }
     row.updated_at = new Date().toISOString(); write(state); return result({ ok: true });
   }
+  if (whId && method === 'DELETE') {
+    denyKeeper(state);
+    const i = state.warehouse.findIndex((x) => x.id === Number(whId[1]));
+    if (i < 0) throw Object.assign(new Error('Məhsul tapılmadı'), { status: 404 });
+    state.warehouse.splice(i, 1); write(state);
+    return result({ ok: true });
+  }
   if (cleanPath === '/procurement/warehouse/replace' && method === 'POST') {
+    denyKeeper(state);
     const items = Array.isArray(body?.items) ? body.items : [];
     state.warehouse = items.map((w, i) => ({
       id: i + 1, name: String(w.name).trim(), unit: String(w.unit || '').trim() || 'ədəd',

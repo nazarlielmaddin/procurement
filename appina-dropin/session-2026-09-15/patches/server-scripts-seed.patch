@@ -1,0 +1,71 @@
+diff --git a/server/scripts/seed.js b/server/scripts/seed.js
+index 1fb802a..7df997e 100644
+--- a/server/scripts/seed.js
++++ b/server/scripts/seed.js
+@@ -1,11 +1,17 @@
+-// Idempotent seed: 4 users (tap-to-enter, no passwords) + 5 demo catalog items.
++// Idempotent seed: 4 users (tap-to-enter, no passwords) + 5 demo catalog items
++// + warehouse stock from server/db/warehouse_seed.json (Excel "anbar faktiki sayım").
+ import { procDb, __resetDb } from '../lib/proc_db.js';
++import { readFileSync, existsSync } from 'node:fs';
++import { resolve, dirname } from 'node:path';
++import { fileURLToPath } from 'node:url';
+ 
+ const SEEDS = [
+   { full_name: 'Elməddin Nəzərli', login: 'elmeddin.nezerli', proc_role: 'procurement_specialist' },
+   { full_name: 'Nəcəf Əsgərov', login: 'necef.esgerov', proc_role: 'procurement_specialist' },
+   { full_name: 'Fərəc Fərəci', login: 'ferec.fereci', proc_role: 'boss' },
+   { full_name: 'Fuad Amirov', login: 'fuad.amirov', proc_role: 'boss' },
++  // Anbardar: yalnız Anbar + 1C full, sifarişlərdə təsdiqlənmişlərə baxış.
++  { full_name: 'Anbardar', login: 'anbardar', proc_role: 'storekeeper', sections_csv: 'warehouse,1c,orders' },
+ ];
+ 
+ const DEMO_CATALOG = [
+@@ -29,6 +35,13 @@ for (const s of SEEDS) {
+     // No passwords: tap-to-enter. Placeholder hash kept for the NOT NULL column.
+     db.prepare('UPDATE users SET full_name = ?, password_hash = ?, proc_role = ?, proc_access = 1, must_rotate = 0 WHERE id = ?')
+       .run(s.full_name, 'nopw', s.proc_role, existing.id);
++    // Anbardar bölmələri həmişə məhdud saxlanılır (köhnə geniş csv-ni daraldır).
++    if (s.sections_csv) {
++      db.prepare('UPDATE users SET sections_csv = ? WHERE id = ?').run(s.sections_csv, existing.id);
++    }
++  } else if (s.sections_csv) {
++    db.prepare('INSERT INTO users (full_name, login, password_hash, proc_role, sections_csv, must_rotate) VALUES (?, ?, ?, ?, ?, 0)')
++      .run(s.full_name, s.login, 'nopw', s.proc_role, s.sections_csv);
+   } else {
+     db.prepare('INSERT INTO users (full_name, login, password_hash, proc_role, must_rotate) VALUES (?, ?, ?, ?, 0)')
+       .run(s.full_name, s.login, 'nopw', s.proc_role);
+@@ -41,6 +54,33 @@ for (const c of DEMO_CATALOG) {
+     .run(c.internal_id, c.name, c.unit, c.buy_price, c.firm, c.buy_price);
+ }
+ 
++// Warehouse: only fills an EMPTY stock table — never overwrites removals' deductions.
++try {
++  const whCount = db.prepare('SELECT COUNT(*) AS n FROM warehouse_items').get()?.n || 0;
++  if (!whCount) {
++    const seedPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'db', 'warehouse_seed.json');
++    if (existsSync(seedPath)) {
++      const whItems = JSON.parse(readFileSync(seedPath, 'utf8'));
++      const now = new Date().toISOString();
++      const ins = db.prepare('INSERT OR IGNORE INTO warehouse_items (name, unit, qty, created_at, updated_at) VALUES (?, ?, ?, ?, ?)');
++      let n = 0;
++      for (const w of whItems) {
++        const name = String(w?.name || '').trim();
++        const unit = String(w?.unit || '').trim() || 'ədəd';
++        const qty = Number(w?.qty);
++        if (!name || !Number.isFinite(qty) || qty < 0) continue;
++        ins.run(name, unit, qty, now, now);
++        n++;
++      }
++      console.log(`Warehouse stock seeded: ${n} items (Excel faktiki sayım).`);
++    }
++  } else {
++    console.log(`Warehouse stock kept: ${whCount} items (seed skipped — table not empty).`);
++  }
++} catch (e) {
++  console.log('Warehouse seed skipped:', e?.message);
++}
++
+ console.log('\nSeed users (tap-to-enter — no passwords, just pick a profile):\n');
+ for (const u of SEEDS) console.log(`  ${u.full_name} [${u.proc_role}]  login=${u.login}`);
+ console.log('\nDemo catalog: 5 items seeded (INSERT OR IGNORE).\n');

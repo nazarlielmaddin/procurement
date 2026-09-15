@@ -1,0 +1,990 @@
+diff --git a/client/src/pages/Procurement.jsx b/client/src/pages/Procurement.jsx
+index b3a745f..74379a2 100644
+--- a/client/src/pages/Procurement.jsx
++++ b/client/src/pages/Procurement.jsx
+@@ -7,6 +7,7 @@ import {
+   Check, CheckCircle2, Clock, XCircle, PieChart as PieIcon, MessageSquare, History,
+   Lock, ChevronLeft, ChevronRight, Minus, PanelLeftClose, PanelLeftOpen,
+   LogOut, SlidersHorizontal, Upload, FileSpreadsheet, Eye, RotateCcw, TrendingUp, Download, Reply, Menu,
++  Warehouse, Database,
+ } from 'lucide-react';
+ import {
+   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
+@@ -862,7 +863,7 @@ function OrderDrawer({ orderId, me, onClose, onChanged }) {
+               </div>
+             )}
+ 
+-            <Comments orderId={orderId} me={me} comments={data.comments} />
++            {me?.proc_role !== 'storekeeper' && <Comments orderId={orderId} me={me} comments={data.comments} />}
+ 
+             <div className="proc-card p-4">
+               <div className="proc-card-title"><History size={15} color={EM} /> Tarixçə</div>
+@@ -888,6 +889,335 @@ function OrderDrawer({ orderId, me, onClose, onChanged }) {
+   );
+ }
+ 
++// ── Silinmə kommentləri (flat: avatar + ad + vaxt + mətn, sifariş üslubunda) ──
++function RemovalComments({ removalId, me }) {
++  const qc = useQueryClient();
++  const [text, setText] = useState('');
++  const [err, setErr] = useState('');
++  const { data } = useQuery({
++    queryKey: ['proc', 'removal', removalId, 'comments'],
++    queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}/comments`),
++  });
++  const comments = data?.items || [];
++
++  const send = useMutation({
++    mutationFn: (body) => api.post(`/procurement/warehouse/removals/${removalId}/comments`, { body }),
++    onSuccess: () => {
++      setText(''); setErr('');
++      qc.invalidateQueries({ queryKey: ['proc', 'removal', removalId, 'comments'] });
++    },
++    onError: (e) => setErr(e?.message || 'Komment göndərilmədi'),
++  });
++  const post = () => {
++    const body = text.trim();
++    if (!body || send.isPending) return;
++    setErr('');
++    send.mutate(body);
++  };
++
++  return (
++    <div className="proc-card p-4">
++      <div className="mb-2.5 flex items-center gap-2 text-[12px] font-bold">
++        <MessageSquare size={15} color={EM} /> Kommentlər
++        <span className="rounded-full bg-elevated px-2 py-px text-[10px] font-bold tabular-nums text-ink-muted">{comments.length}</span>
++      </div>
++      <div className="proc-scroll max-h-64 space-y-3 overflow-y-auto pr-1">
++        {comments.length === 0 && <p className="text-[11px] text-ink-faint">Hələ komment yoxdur — ilk yazan siz olun</p>}
++        {comments.map((c) => (
++          <div key={c.id} className="flex gap-2">
++            <span className="grid size-7 shrink-0 place-items-center rounded-full text-[10px] font-black text-white"
++              style={{ background: avatarGrad(c.author_name) }} title={c.author_name}>
++              {initialsOf(c.author_name)}
++            </span>
++            <div className="min-w-0 flex-1">
++              <div className="rounded-xl border border-line bg-bg px-3 py-2">
++                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
++                  <b className="min-w-0 truncate text-[11px] text-ink">{c.author_name}</b>
++                  {me?.id === c.author_id && <span className="text-[9px] font-semibold text-ink-faint">· siz</span>}
++                  <span className="ml-auto text-[10px] text-ink-faint" title={fmtDateTime(c.created_at)}>{fmtAgo(c.created_at)}</span>
++                </div>
++                <div className="mt-1 text-[12px] leading-relaxed whitespace-pre-wrap break-words">{c.body}</div>
++              </div>
++            </div>
++          </div>
++        ))}
++      </div>
++      {err && <p className="mt-2 text-[12px] text-[var(--status-red)]">{err}</p>}
++      <div className="mt-2.5 flex gap-2">
++        <span className="grid size-9 shrink-0 place-items-center rounded-full text-[11px] font-black text-white"
++          style={{ background: avatarGrad(me?.full_name) }}>{initialsOf(me?.full_name)}</span>
++        <input value={text} onChange={(e) => setText(e.target.value)}
++          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } }}
++          placeholder="Komment yazın…"
++          className="proc-input flex-1 text-[13px]" />
++        <button onClick={post} disabled={send.isPending || !text.trim()}
++          className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-40">
++          {send.isPending ? '…' : 'Göndər'}
++        </button>
++      </div>
++    </div>
++  );
++}
++
++// ── Silinmə detalları drawer-i (sifariş drawer-i məntiqi): baxış + redaktə + silmə + kommentlər ──
++// Açıqlama silinmə-səviyyəlidir (1 silinmə = 1 açıqlama); köhnə sətir-açıqlamaları
++// redaktədə başlığa köçürülür ki, məlumat itməsin.
++function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
++  const qc = useQueryClient();
++  const canApprove = me?.proc_role !== 'storekeeper'; // anbardar təsdiqləyə bilməz
++  const { data, isLoading } = useQuery({
++    queryKey: ['proc', 'removal', removalId],
++    queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}`),
++  });
++  const [editing, setEditing] = useState(false);
++  const [docNo, setDocNo] = useState('');
++  const [destination, setDestination] = useState('');
++  const [headerNote, setHeaderNote] = useState('');
++  const [lines, setLines] = useState([]);
++  const [err, setErr] = useState('');
++
++  // Double-click guard: açılışı edən klik paneli bağlaya bilməz (OrderDrawer ilə eyni).
++  const openedAt = useRef(Date.now());
++  const safeClose = () => { if (Date.now() - openedAt.current > 500) onClose?.(); };
++
++  // Edit formasını açılan silinmə üzrə BİR dəfə doldur — sonrakı refetch-lər
++  // yazılmış dəyərləri əzməsin (OrderDrawer-dakı seededFor nümunəsi).
++  const seededFor = useRef(null);
++  useEffect(() => {
++    if (data?.removal && seededFor.current !== removalId) {
++      const legacy = [...new Set((data.removal.items || []).map((ln) => String(ln?.note || '').trim()).filter(Boolean))].join(' · ');
++      setDocNo(data.removal.doc_no || '');
++      setDestination(data.removal.destination || '');
++      setHeaderNote(data.removal.note || legacy);
++      setLines((data.removal.items || []).map((ln) => ({
++        warehouse_item_id: ln.warehouse_item_id ? String(ln.warehouse_item_id) : '',
++        product_name: ln.product_name,
++        unit: ln.unit,
++        qty: String(ln.qty),
++      })));
++      setEditing(false);
++      setErr('');
++      seededFor.current = removalId;
++    }
++  }, [data, removalId]);
++
++  const refresh = () => {
++    qc.invalidateQueries({ queryKey: ['proc', 'removal', removalId] });
++    qc.invalidateQueries({ queryKey: ['proc', 'warehouse'] });
++    qc.invalidateQueries({ queryKey: ['proc', 'warehouse-removals'] });
++    onChanged?.();
++  };
++
++  const save = useMutation({
++    mutationFn: (form) => api.put(`/procurement/warehouse/removals/${removalId}`, form),
++    onSuccess: () => { setEditing(false); setErr(''); refresh(); },
++    onError: (e) => setErr(e?.message || 'Yadda saxlanmadı'),
++  });
++  const remove = useMutation({
++    mutationFn: () => api.del(`/procurement/warehouse/removals/${removalId}`),
++    onSuccess: () => { onChanged?.(); onClose?.(); },
++  });
++  const approve = useMutation({
++    mutationFn: () => api.post(`/procurement/warehouse/removals/${removalId}/approve`, {}),
++    onSuccess: refresh,
++    onError: (e) => window.alert(e?.message || 'Təsdiqlənmədi'),
++  });
++
++  const removal = data?.removal;
++  const items = removal?.items || [];
++  // Köhnə sətir-açıqlamaları (yeni modeldə başlıqdadır; göstərmək üçün fallback).
++  const legacyNotes = [...new Set(items.map((ln) => String(ln?.note || '').trim()).filter(Boolean))].join(' · ');
++  const shownNote = String(removal?.note || '').trim() || legacyNotes;
++  const stockById = new Map((stock || []).map((s) => [String(s.id), s]));
++  // Bu silinmədəki köhnə miqdarlar — redaktədə mövcudluq = hazırkı stok + köhnə.
++  const oldTotals = new Map();
++  for (const ln of items) {
++    if (ln.warehouse_item_id == null) continue;
++    oldTotals.set(String(ln.warehouse_item_id), (oldTotals.get(String(ln.warehouse_item_id)) || 0) + Number(ln.qty));
++  }
++  const availFor = (wid) => {
++    const s = stockById.get(String(wid));
++    if (!s) return null;
++    return Number(s.qty) + (oldTotals.get(String(wid)) || 0);
++  };
++
++  const askDelete = () => {
++    if (remove.isPending) return;
++    if (!window.confirm(`Silinmə №${removal?.doc_no} silinəcək və ${items.length} sətir stoka geri qaytarılacaq. Davam edilsin?`)) return;
++    remove.mutate();
++  };
++
++  const setLine = (idx, k, v) => setLines((p) => p.map((ln, i) => (i === idx ? { ...ln, [k]: v } : ln)));
++
++  const submit = () => {
++    setErr('');
++    if (!destination.trim()) { setErr('Təyinat / obyekt mütləqdir (məs: Hotel)'); return; }
++    if (!lines.length) { setErr('Ən azı bir məhsul seçin'); return; }
++    for (let i = 0; i < lines.length; i++) {
++      const ln = lines[i];
++      const prod = stockById.get(String(ln.warehouse_item_id));
++      if (!prod) { setErr(`Sətir ${i + 1} — məhsul seçin (stokda olmayanı yenidən seçin və ya sətri silin)`); return; }
++      if (String(ln.qty).trim() === '' || !(Number(ln.qty) > 0)) { setErr(`"${prod.name}" — miqdar 0-dan böyük olmalıdır`); return; }
++    }
++    // Eyni məhsul bir neçə sətirdədirsə cəm yoxlanılır (server də yoxlayır).
++    const sums = new Map();
++    for (const ln of lines) sums.set(String(ln.warehouse_item_id), (sums.get(String(ln.warehouse_item_id)) || 0) + Number(ln.qty));
++    for (const [wid, total] of sums) {
++      const avail = availFor(wid);
++      const prod = stockById.get(wid);
++      if (avail != null && total > avail) { setErr(`"${prod.name}" — cəmi ${avail} ${prod.unit} mövcuddur (bu silinmədəki daxil)`); return; }
++    }
++    save.mutate({
++      doc_no: docNo.trim(),
++      destination: destination.trim(),
++      note: headerNote.trim(),
++      lines: lines.map((ln) => ({
++        warehouse_item_id: Number(ln.warehouse_item_id),
++        qty: Number(ln.qty),
++      })),
++    });
++  };
++
++  return (
++    <div className="fixed inset-0 z-50" onClick={safeClose}>
++      <div className="proc-backdrop absolute inset-0 backdrop-blur-[3px]" style={{ background: 'color-mix(in oklab, var(--bg) 55%, transparent)' }} />
++      <div className="proc-drawer absolute top-0 right-0 h-full w-full bg-elevated shadow-float flex flex-col proc-scroll overflow-y-auto" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
++        <Style />
++        <div className="proc-hdr sticky top-0 bg-elevated z-10">
++          <span className="proc-accent-bar proc-accent-bar--trio" />
++          <h2 className="text-[14px] font-semibold text-ink">Silinmə №{removal?.doc_no ?? removalId}</h2>
++          {removal && <span className="proc-drawer-status"><StatusBadge value={removal.status || 'pending'} /></span>}
++          {!editing && removal && (me?.proc_role !== 'storekeeper' || (removal.status || 'pending') !== 'approved') && (
++            <button onClick={() => { setErr(''); setEditing(true); }} title="Redaktə et"
++              className="proc-drawer-close text-ink-faint hover:text-ink hover:bg-elevated">
++              <Pencil size={16} />
++            </button>
++          )}
++          <button onClick={askDelete} disabled={remove.isPending} title="Silinməni sil (stoka geri qaytar)"
++            className="proc-drawer-close text-[var(--status-red)] hover:bg-[var(--status-red)]/10 disabled:opacity-50">
++            <Trash2 size={17} />
++          </button>
++          <button onClick={onClose} className="proc-drawer-close text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
++        </div>
++        {isLoading || !removal ? (
++          <div className="space-y-4 p-4">
++            <div className="proc-skel h-28 rounded-2xl" />
++            <div className="proc-skel h-44 rounded-2xl" style={{ opacity: .8 }} />
++          </div>
++        ) : editing ? (
++          <div className="p-4 space-y-4">
++            <div className="proc-card p-4">
++              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
++                <label className="text-[13px] block"><span className="proc-label">№</span>
++                  <input value={docNo} onChange={(e) => setDocNo(e.target.value)} className="proc-input" /></label>
++                <label className="text-[13px] block"><span className="proc-label">Təyinat / obyekt *</span>
++                  <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Məs: Hotel" className="proc-input" /></label>
++                <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Açıqlama</span>
++                  <input value={headerNote} onChange={(e) => setHeaderNote(e.target.value)} placeholder="Məs: istifadədən çıxarılıb" className="proc-input" /></label>
++              </div>
++            </div>
++            <div className="proc-card overflow-hidden">
++              <div className="px-4 py-2.5 border-b border-line text-[12px] font-bold">Məhsullar</div>
++              <table className="w-full text-[12px]">
++                <thead>
++                  <tr className="text-left text-[10px] uppercase tracking-wider text-ink-faint">
++                    <th className="px-2.5 py-1.5">Məhsul *</th>
++                    <th className="px-2.5 py-1.5 text-right">Mövcud</th>
++                    <th className="px-2.5 py-1.5 text-right">Miqdar *</th>
++                    <th className="px-2.5 py-1.5 w-8" />
++                  </tr>
++                </thead>
++                <tbody>
++                  {lines.map((ln, idx) => {
++                    const gone = ln.warehouse_item_id && !stockById.get(String(ln.warehouse_item_id));
++                    const avail = availFor(ln.warehouse_item_id);
++                    return (
++                      <tr key={idx} className="border-t border-line/50">
++                        <td className="px-2.5 py-1.5">
++                          <select value={ln.warehouse_item_id} onChange={(e) => setLine(idx, 'warehouse_item_id', e.target.value)}
++                            className="proc-input min-w-[140px] px-1.5 py-1 text-[11px]">
++                            <option value="">— Seçin —</option>
++                            {gone && <option value={ln.warehouse_item_id} disabled>{ln.product_name} (stokda yoxdur)</option>}
++                            {(stock || []).map((s) => (
++                              <option key={s.id} value={s.id}>{s.name} ({s.qty} {s.unit})</option>
++                            ))}
++                          </select>
++                          {gone && <div className="mt-1 text-[10px] text-[var(--status-red)]">Yenidən seçin və ya sətri silin</div>}
++                        </td>
++                        <td className="px-2.5 py-1.5 text-right tabular-nums text-ink-muted">{avail != null ? avail : '—'}</td>
++                        <td className="px-2.5 py-1.5 text-right">
++                          <input type="number" step="any" min="0" value={ln.qty} onChange={(e) => setLine(idx, 'qty', e.target.value)}
++                            className="proc-input w-20 px-1.5 py-1 text-[11px] text-right tabular-nums" />
++                        </td>
++                        <td className="px-2.5 py-1.5 text-center">
++                          <button onClick={() => setLines((p) => (p.length > 1 ? p.filter((_, i) => i !== idx) : p))} className="proc-rowbtn proc-rowbtn--danger"><Trash2 size={13} /></button>
++                        </td>
++                      </tr>
++                    );
++                  })}
++                </tbody>
++              </table>
++            </div>
++            <button onClick={() => setLines((p) => [...p, { warehouse_item_id: '', product_name: '', unit: '', qty: '' }])}
++              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-semibold text-ink-muted hover:text-ink hover:border-[var(--accent)]">
++              <Plus size={14} /> Sətir əlavə et</button>
++            {(err || save.isError) && <p className="text-[12px] text-[var(--status-red)]">{err || save.error?.message}</p>}
++            <div className="flex justify-end gap-2">
++              <button onClick={() => { setEditing(false); setErr(''); }} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
++              <button onClick={submit} disabled={save.isPending} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">
++                {save.isPending ? '...' : 'Yadda saxla'}</button>
++            </div>
++          </div>
++        ) : (
++          <div className="p-4 space-y-4">
++            <div className="proc-card p-4">
++              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[12px]">
++                <div><div className="proc-label">№</div><div className="font-mono font-bold">{removal.doc_no}</div></div>
++                <div><div className="proc-label">Təyinat / obyekt</div><div className="font-semibold break-words">{removal.destination}</div></div>
++                <div><div className="proc-label">Tarix</div><div>{fmtDateTime(removal.created_at)}</div></div>
++                <div><div className="proc-label">Yaradan</div><div className="break-words">{removal.created_by_name || '—'}</div></div>
++                {shownNote && <div className="col-span-1 sm:col-span-2"><div className="proc-label">Açıqlama</div><div className="break-words">{shownNote}</div></div>}
++              </div>
++            </div>
++            <div className="proc-card overflow-hidden">
++              <div className="px-4 py-2.5 border-b border-line text-[12px] font-bold">Məhsullar</div>
++              <table className="w-full text-[12px]">
++                <thead>
++                  <tr className="text-left text-[10px] uppercase tracking-wider text-ink-faint">
++                    <th className="px-2.5 py-1.5">Məhsul</th>
++                    <th className="px-2.5 py-1.5 text-right">Miqdar</th>
++                  </tr>
++                </thead>
++                <tbody>
++                  {items.map((it) => (
++                    <tr key={it.id} className="border-t border-line/50">
++                      <td className="px-2.5 py-2"><span className="block break-words">{it.product_name}</span><div className="text-[10px] text-ink-faint">{it.unit}</div></td>
++                      <td className="px-2.5 py-2 text-right tabular-nums font-semibold whitespace-nowrap">{it.qty} {it.unit}</td>
++                    </tr>
++                  ))}
++                </tbody>
++              </table>
++            </div>
++            <RemovalComments removalId={removalId} me={me} />
++            {canApprove && (removal.status || 'pending') === 'pending' && (
++              <div className="proc-card p-4 flex flex-wrap items-center gap-2">
++                <Check size={15} color={EM} />
++                <span className="text-[12px] text-ink-muted">Təhvil Təslim aktı imzalanıbsa təsdiq edin.</span>
++                <button onClick={() => approve.mutate()} disabled={approve.isPending}
++                  className="proc-btn ml-auto inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] disabled:opacity-50"
++                  style={{ boxShadow: `0 10px 22px -10px ${EM}88` }}>
++                  <Check size={15} strokeWidth={2.5} /> {approve.isPending ? '...' : 'Təsdiq et'}
++                </button>
++              </div>
++            )}
++            {(remove.isError || remove.error) && <p className="text-[12px] text-[var(--status-red)]">{remove.error?.message || 'Silinmədi'}</p>}
++          </div>
++        )}
++      </div>
++    </div>
++  );
++}
++
+ // ── Catalog form (boss only) ──
+ // Known firms — bunlar firma cədvəllərinin adlarıdır
+ const FIRM_OPTIONS = ['İmza', 'Premier'];
+@@ -962,10 +1292,206 @@ function CatalogForm({ row, firms, onClose, onSave, saving }) {
+   );
+ }
+ 
++// ── Anbar: Əlavə et formu (Malın adı | Ölçü vahidi | Miqdarı) ──
++function WarehouseForm({ onClose, onSave, saving }) {
++  const [form, setForm] = useState({ name: '', unit: 'ədəd', qty: '' });
++  const [err, setErr] = useState('');
++  const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
++  const submit = () => {
++    setErr('');
++    if (!form.name.trim()) { setErr('Məhsul adı mütləqdir'); return; }
++    if (String(form.qty).trim() === '' || !(Number(form.qty) >= 0)) { setErr('Miqdarı daxil edin (0 və ya böyük)'); return; }
++    onSave({ name: form.name.trim(), unit: form.unit.trim() || 'ədəd', qty: Number(form.qty) });
++  };
++  return (
++    <Modal onClose={onClose} maxWidth={480}>
++      <div className="proc-modal-hdr">
++        <span className="proc-accent-bar" />
++        <h3 className="flex items-center gap-2 text-[14px] font-bold">
++          <Warehouse size={18} color={EM} />
++          Anbara əlavə et
++        </h3>
++        <button onClick={onClose} className="rounded-lg p-1.5 text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
++      </div>
++      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
++        <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Malın adı *</span>
++          <input value={form.name} onChange={set('name')} placeholder="Məs: HDMI kabel 2m" className="proc-input" /></label>
++        <label className="text-[13px] block"><span className="proc-label">Ölçü vahidi</span>
++          <input value={form.unit} onChange={set('unit')} placeholder="ədəd" className="proc-input" /></label>
++        <label className="text-[13px] block"><span className="proc-label">Miqdarı *</span>
++          <input type="number" step="any" min="0" value={form.qty} onChange={set('qty')} className="proc-input tabular-nums" /></label>
++      </div>
++      {err && <p className="px-5 pb-1 text-[12px] text-[var(--status-red)]">{err}</p>}
++      <div className="proc-modal-ftr">
++        <button onClick={onClose} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
++        <button onClick={submit} disabled={saving} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">{saving ? '...' : 'Yadda saxla'}</button>
++      </div>
++    </Modal>
++  );
++}
++
++// ── Anbar: stok redaktəsi. Boss/specialist full (ad + vahid + miqdar);
++// anbardar yalnız miqdarı manual ARTIRA bilər (ad/vahid bağlıdır, azaltmaq olmaz).
++function WarehouseEditForm({ row, canFull, onClose, onSave, saving }) {
++  const [name, setName] = useState(row?.name || '');
++  const [unit, setUnit] = useState(row?.unit || 'ədəd');
++  const [qty, setQty] = useState(row?.qty ?? '');
++  const [err, setErr] = useState('');
++  const submit = () => {
++    setErr('');
++    if (canFull) {
++      if (!name.trim()) { setErr('Məhsul adı mütləqdir'); return; }
++      if (String(qty).trim() === '' || !(Number(qty) >= 0)) { setErr('Miqdarı daxil edin (0 və ya böyük)'); return; }
++      onSave({ name: name.trim(), unit: unit.trim() || 'ədəd', qty: Number(qty) });
++    } else {
++      if (String(qty).trim() === '' || !(Number(qty) > Number(row.qty))) {
++        setErr(`Miqdar yalnız artırıla bilər (hazırkı: ${row.qty} ${row.unit})`);
++        return;
++      }
++      onSave({ qty: Number(qty) });
++    }
++  };
++  return (
++    <Modal onClose={onClose} maxWidth={480}>
++      <div className="proc-modal-hdr">
++        <span className="proc-accent-bar" />
++        <h3 className="flex items-center gap-2 text-[14px] font-bold">
++          <Warehouse size={18} color={EM} />
++          {canFull ? 'Məhsulu redaktə et' : 'Miqdarı artır'}
++        </h3>
++        <button onClick={onClose} className="rounded-lg p-1.5 text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
++      </div>
++      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
++        <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Malın adı *</span>
++          <input value={name} onChange={(e) => setName(e.target.value)} disabled={!canFull} className="proc-input disabled:opacity-50" /></label>
++        <label className="text-[13px] block"><span className="proc-label">Ölçü vahidi</span>
++          <input value={unit} onChange={(e) => setUnit(e.target.value)} disabled={!canFull} className="proc-input disabled:opacity-50" /></label>
++        <label className="text-[13px] block"><span className="proc-label">Miqdarı *</span>
++          <input type="number" step="any" min={canFull ? 0 : row.qty} value={qty} onChange={(e) => setQty(e.target.value)} className="proc-input tabular-nums" /></label>
++      </div>
++      {!canFull && <p className="px-5 pb-1 text-[11px] text-ink-faint">Anbardar yalnız miqdarı artıra bilər — azaltmaq olmaz.</p>}
++      {err && <p className="px-5 pb-1 text-[12px] text-[var(--status-red)]">{err}</p>}
++      <div className="proc-modal-ftr">
++        <button onClick={onClose} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
++        <button onClick={submit} disabled={saving} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">{saving ? '...' : 'Yadda saxla'}</button>
++      </div>
++    </Modal>
++  );
++}
++
++const blankRemovalLine = () => ({ warehouse_item_id: '', qty: '' });
++
++// ── Silinmə yarat: № + Təyinat/obyekt + 1 açıqlama + bir neçə məhsul (məhsul + miqdar) ──
++function RemovalForm({ stock, nextDocNo, onClose, onSave, saving, serverErr }) {
++  const [docNo, setDocNo] = useState(nextDocNo || '');
++  const [destination, setDestination] = useState('');
++  const [note, setNote] = useState('');
++  const [lines, setLines] = useState([blankRemovalLine()]);
++  const [err, setErr] = useState('');
++  const setLine = (idx, k, v) => setLines((p) => p.map((ln, i) => (i === idx ? { ...ln, [k]: v } : ln)));
++  const stockById = new Map((stock || []).map((s) => [String(s.id), s]));
++
++  const submit = () => {
++    setErr('');
++    if (!destination.trim()) { setErr('Təyinat / obyekt mütləqdir (məs: Hotel)'); return; }
++    if (!lines.length) { setErr('Ən azı bir məhsul seçin'); return; }
++    for (let i = 0; i < lines.length; i++) {
++      const ln = lines[i];
++      const prod = stockById.get(String(ln.warehouse_item_id));
++      if (!prod) { setErr(`Sətir ${i + 1} — məhsul seçin`); return; }
++      if (String(ln.qty).trim() === '' || !(Number(ln.qty) > 0)) { setErr(`"${prod.name}" — miqdar 0-dan böyük olmalıdır`); return; }
++      if (Number(ln.qty) > Number(prod.qty)) { setErr(`"${prod.name}" — stokda ${prod.qty} ${prod.unit} var, artıq silinə bilməz`); return; }
++    }
++    onSave({
++      doc_no: docNo.trim(),
++      destination: destination.trim(),
++      note: note.trim(),
++      lines: lines.map((ln) => ({
++        warehouse_item_id: Number(ln.warehouse_item_id),
++        qty: Number(ln.qty),
++      })),
++    });
++  };
++
++  return (
++    <Modal onClose={onClose} maxWidth={720}>
++      <div className="proc-modal-hdr shrink-0">
++        <span className="proc-accent-bar" />
++        <h3 className="flex items-center gap-2 text-[14px] font-bold">
++          <Minus size={18} color={EM} />
++          Silinmə yarat
++        </h3>
++        <button onClick={onClose} className="rounded-lg p-1.5 text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
++      </div>
++      <div className="flex-1 overflow-y-auto p-5 space-y-4 proc-scroll">
++        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
++          <label className="text-[13px] block"><span className="proc-label">№</span>
++            <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="Məs: 1" className="proc-input" /></label>
++          <label className="text-[13px] block"><span className="proc-label">Təyinat / obyekt *</span>
++            <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Məs: Hotel" className="proc-input" /></label>
++          <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Açıqlama</span>
++            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Məs: istifadədən çıxarılıb" className="proc-input" /></label>
++        </div>
++        <div className="overflow-x-auto rounded-xl border border-line">
++          <table className="w-full min-w-[440px] text-[12px]">
++            <thead>
++              <tr className="border-b border-line bg-elevated/40 text-left text-[10px] uppercase tracking-wider text-ink-faint">
++                <th className="px-2.5 py-1.5 w-8 text-center">№</th>
++                <th className="px-2.5 py-1.5">Məhsul *</th>
++                <th className="px-2.5 py-1.5 w-24 text-right">Stok</th>
++                <th className="px-2.5 py-1.5 w-24 text-right">Miqdar *</th>
++                <th className="px-2.5 py-1.5 w-8" />
++              </tr>
++            </thead>
++            <tbody>
++              {lines.map((ln, idx) => {
++                const prod = stockById.get(String(ln.warehouse_item_id));
++                return (
++                  <tr key={idx} className="border-b border-line/60 last:border-b-0">
++                    <td className="px-2.5 py-1.5 text-center text-ink-faint">{idx + 1}</td>
++                    <td className="px-2.5 py-1.5">
++                      <select value={ln.warehouse_item_id} onChange={(e) => setLine(idx, 'warehouse_item_id', e.target.value)}
++                        className="proc-input min-w-[160px] px-2 py-1.5">
++                        <option value="">— Seçin —</option>
++                        {(stock || []).map((s) => (
++                          <option key={s.id} value={s.id}>{s.name} ({s.qty} {s.unit})</option>
++                        ))}
++                      </select>
++                    </td>
++                    <td className="px-2.5 py-1.5 text-right tabular-nums text-ink-muted">{prod ? `${prod.qty} ${prod.unit}` : '—'}</td>
++                    <td className="px-2.5 py-1.5">
++                      <input type="number" step="any" min="0" value={ln.qty} onChange={(e) => setLine(idx, 'qty', e.target.value)}
++                        className="proc-input w-20 px-2 py-1.5 text-right tabular-nums" /></td>
++                    <td className="px-2.5 py-1.5 text-center">
++                      <button onClick={() => setLines((p) => (p.length > 1 ? p.filter((_, i) => i !== idx) : p))} className="proc-rowbtn proc-rowbtn--danger"><Trash2 size={13} /></button>
++                    </td>
++                  </tr>
++                );
++              })}
++            </tbody>
++          </table>
++        </div>
++        <div>
++          <button onClick={() => setLines((p) => [...p, blankRemovalLine()])}
++            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-semibold text-ink-muted hover:text-ink hover:border-[var(--accent)]">
++            <Plus size={14} /> Sətir əlavə et</button>
++        </div>
++        {(err || serverErr) && <p className="text-[12px] text-[var(--status-red)]">{err || serverErr}</p>}
++      </div>
++      <div className="proc-modal-ftr shrink-0">
++        <button onClick={onClose} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
++        <button onClick={submit} disabled={saving} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">{saving ? '...' : 'Təsdiqlə'}</button>
++      </div>
++    </Modal>
++  );
++}
++
+ const SECTIONS = [
+   { key: 'panel', label: 'Panel', icon: LayoutDashboard },
+   { key: 'orders', label: 'Sifarişlər', icon: ShoppingCart, endpoint: '/procurement/orders' },
+   { key: 'catalog', label: 'Qiymət kataloqu', icon: Tag, endpoint: '/procurement/catalog' },
++  { key: 'warehouse', label: 'Anbar', icon: Warehouse, endpoint: '/procurement/warehouse' },
++  { key: '1c', label: '1C', icon: Database },
+ ];
+ 
+ function PieTooltip({ active, payload }) {
+@@ -1048,7 +1574,10 @@ function Dashboard({ dash }) {
+ 
+ export default function Procurement({ me }) {
+   const isBoss = me?.proc_role === 'boss';
+-  const [section, setSection] = useState('panel');
++  const isStorekeeper = me?.proc_role === 'storekeeper'; // Anbardar: Anbar + 1C full, sifarişlərdə təsdiqlənmişlərə baxış
++  // Anbardar yalnız öz bölmələrini görür (Panel/Kataloq gizlidir).
++  const visibleSections = isStorekeeper ? SECTIONS.filter((s) => ['warehouse', '1c', 'orders'].includes(s.key)) : SECTIONS;
++  const [section, setSection] = useState(isStorekeeper ? 'warehouse' : 'panel');
+   const [navOpen, setNavOpen] = useState(true);
+   const [mobileNav, setMobileNav] = useState(false);
+   const [search, setSearch] = useState('');
+@@ -1062,16 +1591,27 @@ export default function Procurement({ me }) {
+   const [firmFilter, setFirmFilter] = useState('');
+   const catFileRef = useRef(null);
+   const [importing, setImporting] = useState(false);
+-  const active = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
++  // ── Anbar state ──
++  const [whSearch, setWhSearch] = useState('');
++  const [whAdding, setWhAdding] = useState(false);
++  const [whEditing, setWhEditing] = useState(null); // stok sətri = redaktə/artsır
++  const [removalOpen, setRemovalOpen] = useState(false);
++  const [openRemoval, setOpenRemoval] = useState(null); // id = drawer açıq
++  const [removalErr, setRemovalErr] = useState('');
++  const whFileRef = useRef(null);
++  const [whImporting, setWhImporting] = useState(false);
++  const active = visibleSections.find((s) => s.key === section) || visibleSections[0];
+   const qc = useQueryClient();
+ 
+-  const { data: dash } = useQuery({ queryKey: ['proc', 'dashboard'], queryFn: () => api.get('/procurement/dashboard') });
++  const { data: dash } = useQuery({ queryKey: ['proc', 'dashboard'], queryFn: () => api.get('/procurement/dashboard'), enabled: !isStorekeeper });
+   // Single source of truth per tab: orders query vs catalog query (same
+   // endpoint, no duplicate fetch — display and search read the same rows).
++  // Anbardar sifarişlərdə həmişə təsdiqlənmişləri görür (filtr serverdə də məcburidir).
++  const orderStatus = section === 'orders' ? (isStorekeeper ? 'approved' : statusFilter) : '';
+   const listQ = useQuery({
+     queryKey: ['proc', section, statusFilter, firmFilter],
+     queryFn: () => api.get(active.endpoint
+-      + (section === 'orders' && statusFilter ? `?status=${statusFilter}` : '')
++      + (section === 'orders' && orderStatus ? `?status=${orderStatus}` : '')
+       + (section === 'catalog' && firmFilter ? `?firm=${encodeURIComponent(firmFilter)}` : '')),
+     enabled: !!active.endpoint,
+   });
+@@ -1090,13 +1630,15 @@ export default function Procurement({ me }) {
+     .map((c) => c.firm)
+     .filter((firm) => firm && firm !== 'UMUMI'))].sort((a, b) => a.localeCompare(b, 'az'));
+ 
+-  useEffect(() => { setSearch(''); setPage(1); setStatusFilter(''); setFirmFilter(''); }, [section]);
++  useEffect(() => { setSearch(''); setPage(1); setStatusFilter(''); setFirmFilter(''); setWhSearch(''); }, [section]);
+ 
+   const refetchAll = () => {
+     qc.invalidateQueries({ queryKey: ['proc', 'orders'] });
+     qc.invalidateQueries({ queryKey: ['proc', 'dashboard'] });
+     qc.invalidateQueries({ queryKey: ['proc', 'catalog'] });
+     qc.invalidateQueries({ queryKey: ['proc', 'catalog-firms'] });
++    qc.invalidateQueries({ queryKey: ['proc', 'warehouse'] });
++    qc.invalidateQueries({ queryKey: ['proc', 'warehouse-removals'] });
+   };
+   const [saveErr, setSaveErr] = useState('');
+   const saveOrder = useMutation({
+@@ -1125,6 +1667,116 @@ export default function Procurement({ me }) {
+     onError: (e) => window.alert(e?.message || 'Import alınmadı'),
+   });
+ 
++  // ── Anbar queries (only when the warehouse tab is active) ──
++  const whQ = useQuery({
++    queryKey: ['proc', 'warehouse'],
++    queryFn: () => api.get('/procurement/warehouse'),
++    enabled: section === 'warehouse',
++  });
++  const remQ = useQuery({
++    queryKey: ['proc', 'warehouse-removals'],
++    queryFn: () => api.get('/procurement/warehouse/removals'),
++    enabled: section === 'warehouse',
++  });
++  const warehouse = whQ.data?.items || [];
++  const removals = remQ.data?.items || [];
++
++  const addWh = useMutation({
++    mutationFn: (form) => api.post('/procurement/warehouse', form),
++    onSuccess: () => { setWhAdding(false); refetchAll(); },
++    onError: (e) => window.alert(e?.message || 'Yadda saxlanmadı'),
++  });
++  const replaceWh = useMutation({
++    mutationFn: ({ items }) => api.post('/procurement/warehouse/replace', { items }),
++    onSuccess: (d) => { refetchAll(); window.alert(`${d?.count ?? ''} məhsul yükləndi — anbar tam yeniləndi`); },
++    onError: (e) => window.alert(e?.message || 'Import alınmadı'),
++  });
++  const createRemoval = useMutation({
++    mutationFn: (form) => api.post('/procurement/warehouse/removals', form),
++    onSuccess: () => { setRemovalOpen(false); setRemovalErr(''); refetchAll(); },
++    onError: (e) => setRemovalErr(e?.message || 'Silinmə yaradılmadı'),
++  });
++  const saveWhEdit = useMutation({
++    mutationFn: (form) => api.put(`/procurement/warehouse/${whEditing.id}`, form),
++    onSuccess: () => { setWhEditing(null); refetchAll(); },
++    onError: (e) => window.alert(e?.message || 'Yadda saxlanmadı'),
++  });
++  const delWh = useMutation({
++    mutationFn: (row) => api.del(`/procurement/warehouse/${row.id}`),
++    onSuccess: refetchAll,
++    onError: (e) => window.alert(e?.message || 'Silinmədi'),
++  });
++
++  // Anbar export: hazırkı anbar Excel formatında (Malın adı | Ölçü vahidi | Miqdarı).
++  const handleWarehouseExport = async () => {
++    if (!warehouse.length) { window.alert('Anbar boşdur — export ediləcək məhsul yoxdur'); return; }
++    try {
++      const XLSX = await import('xlsx');
++      const sheet = XLSX.utils.aoa_to_sheet([
++        ['Malın adı', 'Ölçü vahidi', 'Miqdarı'],
++        ...warehouse.map((w) => [w.name, w.unit, Number(w.qty)]),
++      ]);
++      sheet['!cols'] = [{ wch: 52 }, { wch: 12 }, { wch: 12 }];
++      const wb = XLSX.utils.book_new();
++      XLSX.utils.book_append_sheet(wb, sheet, 'Anbar');
++      const d = new Date();
++      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
++      XLSX.writeFile(wb, `anbar-${stamp}.xlsx`);
++    } catch (err) {
++      window.alert(err?.message || 'Excel yazılmadı');
++    }
++  };
++
++  // Tam yeniləmə: Excel (Malın adı | Ölçü vahidi | Miqdarı) → bütün anbar əvəz olunur.
++  const handleWarehouseFile = async (e) => {
++    const f = e.target.files?.[0];
++    if (!f) return;
++    setWhImporting(true);
++    try {
++      const buf = await f.arrayBuffer();
++      const XLSX = await import('xlsx');
++      const wb = XLSX.read(buf, { type: 'array' });
++      const ws = wb.Sheets[wb.SheetNames[0]];
++      if (!ws) { window.alert('Excel-də vərəq tapılmadı'); return; }
++      const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
++      if (!grid.length) { window.alert('Fayl boşdur'); return; }
++      const normCell = (v) => String(v ?? '').trim();
++      const numCell = (v) => {
++        if (v === '' || v == null) return NaN;
++        if (typeof v === 'number') return v;
++        let s = String(v).replace(/\s/g, '');
++        if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.');
++        else if (s.includes(',')) s = s.replace(',', '.');
++        return Number(s);
++      };
++      const head = grid[0].map((c) => normCell(c).toLowerCase());
++      const findCol = (keys) => head.findIndex((c) => keys.some((k) => c.includes(k)));
++      const nameIdx = findCol(['mal', 'ad', 'name', 'məhsul', 'mehsul']);
++      const unitIdx = findCol(['ölçü', 'olcu', 'vahid', 'unit']);
++      const qtyIdx = findCol(['miqdar', 'say', 'qty', 'miqdar']);
++      const looksHeader = nameIdx >= 0 || unitIdx >= 0 || qtyIdx >= 0;
++      const col = (i, fallback) => (i >= 0 ? i : fallback);
++      const body = looksHeader ? grid.slice(1) : grid;
++      const items = [];
++      for (let i = 0; i < body.length; i++) {
++        const r = body[i];
++        const name = normCell(r[col(nameIdx, 0)]);
++        if (!name) continue; // tam boş sətir
++        items.push({ name, unit: normCell(r[col(unitIdx, 1)]) || 'ədəd', qty: numCell(r[col(qtyIdx, 2)]) });
++      }
++      if (!items.length) { window.alert('Heç bir məhsul tapılmadı. Format: Malın adı | Ölçü vahidi | Miqdarı'); return; }
++      const bad = items.find((it) => !it.name || !Number.isFinite(it.qty) || it.qty < 0);
++      if (bad) { window.alert(`Yoxlayın: "${bad.name || 'boş sətir'}" — ad və miqdar düzgün olmalıdır`); return; }
++      if (!window.confirm(`${items.length} məhsul tapıldı. BÜTÜN anbar əvəz olunacaq. Davam edilsin?`)) return;
++      await replaceWh.mutateAsync({ items });
++    } catch (err) {
++      window.alert(err?.message || 'Excel oxunmadı');
++    } finally {
++      setWhImporting(false);
++      if (e.target) e.target.value = '';
++    }
++  };
++
+   // Main export always contains every firm catalog, regardless of the active
+   // firm/search filters. Per-firm exports below remain scoped to one group.
+   const handleCatalogExport = async () => {
+@@ -1244,6 +1896,44 @@ export default function Procurement({ me }) {
+     ? catalog.filter((c) => `${c.internal_id} ${c.name} ${c.firm || ''}`.toLowerCase().includes(catSearch.toLowerCase()))
+     : catalog;
+ 
++  // Anbar sətirləri (axtarış: ad + vahid).
++  const whRows = whSearch
++    ? warehouse.filter((w) => `${w.name} ${w.unit}`.toLowerCase().includes(whSearch.toLowerCase()))
++    : warehouse;
++
++  // Silinmələr — sənəd səviyyəsi: eyni №-li silinmə 1 sətirdir.
++  // Məhsul adı və miqdar cədvəldə YOXDUR — yalnız kliklə açılan detallar pəncərəsindədir.
++  const removalRows = removals.map((r) => {
++    const lineNotes = [...new Set((r.items || []).map((ln) => String(ln?.note || '').trim()).filter(Boolean))];
++    const headerNote = String(r.note || '').trim();
++    return {
++      id: r.id,
++      removal_id: r.id,
++      doc_no: r.doc_no,
++      destination: r.destination,
++      created_at: r.created_at,
++      count: (r.items || []).length,
++      status: r.status || 'pending',
++      note: headerNote || lineNotes.join(' · '),
++    };
++  });
++
++  const WH_COLS = [
++    { key: 'n', label: '№', width: '7%', cell: (r) => <span className="text-ink-faint tabular-nums">{r._n}</span> },
++    { key: 'name', label: 'Malın adı', width: '58%', strong: true, cell: (r) => <span className="block truncate">{r.name}</span> },
++    { key: 'unit', label: 'Ölçü vahidi', width: '15%', cell: (r) => <span className="block truncate text-ink-muted">{r.unit}</span> },
++    { key: 'qty', label: 'Miqdarı', width: '20%', align: 'right', cell: (r) => <span className="tabular-nums font-semibold">{r.qty}</span> },
++  ];
++  const REM_COLS = [
++    { key: 'doc_no', label: '№', width: '8%', cell: (r) => <span className="font-mono font-bold">{r.doc_no}</span> },
++    { key: 'created_at', label: 'Tarix', width: '16%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
++    { key: 'destination', label: 'Müştəri', width: '18%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
++    { key: 'count', label: 'Məhsul', width: '10%', cell: (r) => <span className="tabular-nums text-ink-muted">{r.count} məhsul</span> },
++    { key: 'status', label: 'Status', width: '14%', cell: (r) => <StatusBadge value={r.status} /> },
++    { key: 'note', label: 'Açıqlama', width: '34%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
++  ];
++  const whNumbered = whRows.map((w, i) => ({ ...w, _n: i + 1 }));
++
+   const ORDER_COLS = [
+     { key: 'id', label: '#', width: '7%', cell: (r) => <span className="text-ink-faint">#{r.id}</span> },
+     { key: 'requester_name', label: 'Sifariş edən', width: '18%', strong: true, cell: (r) => <span className="block truncate">{r.requester_name}</span> },
+@@ -1308,7 +1998,7 @@ export default function Procurement({ me }) {
+           </div>
+         )}
+         <nav className="flex-1 overflow-y-auto pl-1 pr-2 py-2 space-y-0.5 proc-scroll">
+-          {SECTIONS.map((s) => {
++          {visibleSections.map((s) => {
+             const on = s.key === section;
+             return (
+               <button key={s.key} onClick={() => { setSection(s.key); setMobileNav(false); }} title={s.label}
+@@ -1327,7 +2017,7 @@ export default function Procurement({ me }) {
+               </span>
+               <span className="min-w-0 flex-1 leading-tight">
+                 <span className="block truncate text-[11px] font-bold text-ink">{me?.full_name}</span>
+-                <span className={`proc-role mt-0.5 ${isBoss ? 'proc-role--boss' : 'proc-role--spec'}`}>{isBoss ? 'BOSS' : 'SPECIALIST'}</span>
++                <span className={`proc-role mt-0.5 ${isBoss ? 'proc-role--boss' : 'proc-role--spec'}`}>{isBoss ? 'BOSS' : isStorekeeper ? 'ANBARDAR' : 'SPECIALIST'}</span>
+               </span>
+               <button onClick={logout} title="Çıxış" className="shrink-0 rounded-lg p-1.5 text-ink-faint hover:bg-elevated hover:text-ink"><LogOut size={15} /></button>
+             </div>
+@@ -1351,12 +2041,13 @@ export default function Procurement({ me }) {
+               {active.label}
+               {section === 'orders' && <span className="text-[13px] font-medium tabular-nums text-ink-faint"> · {allRows.length} qeyd</span>}
+               {section === 'catalog' && <span className="text-[13px] font-medium tabular-nums text-ink-faint"> · {catalog.length} məhsul</span>}
++              {section === 'warehouse' && <span className="text-[13px] font-medium tabular-nums text-ink-faint"> · {warehouse.length} məhsul</span>}
+             </h2>
+             {active.endpoint && (
+               <div className="proc-toolbar">
+                 <div className="proc-search">
+                   <Search size={14} className="absolute left-2.5 top-2.5 text-ink-faint" />
+-                  <input value={section === 'catalog' ? catSearch : search} onChange={(e) => section === 'catalog' ? setCatSearch(e.target.value) : setSearch(e.target.value)}
++                  <input value={section === 'catalog' ? catSearch : section === 'warehouse' ? whSearch : search} onChange={(e) => section === 'catalog' ? setCatSearch(e.target.value) : section === 'warehouse' ? setWhSearch(e.target.value) : setSearch(e.target.value)}
+                     placeholder="Axtar..."                     className="proc-control pl-8 pr-2 text-[13px] rounded-lg bg-input border border-line outline-none focus:border-[var(--accent)]" />
+                 </div>
+                 {section === 'catalog' && (
+@@ -1367,7 +2058,7 @@ export default function Procurement({ me }) {
+                     {firms.map((f) => <option key={f} value={f}>{f}</option>)}
+                   </select>
+                 )}
+-                {section === 'orders' && (
++                {section === 'orders' && !isStorekeeper && (
+                   <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+                     className="rounded-lg border border-line bg-input px-2.5 py-2 text-[12px] outline-none focus:border-[var(--accent)]">
+                     <option value="">Hamısı</option>
+@@ -1377,7 +2068,29 @@ export default function Procurement({ me }) {
+                     <option value="rejected">Rədd</option>
+                   </select>
+                 )}
+-                {section === 'orders' && !isBoss &&                 <button onClick={() => setEditing({})} className="proc-btn inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Yeni sifariş</button>}
++                {section === 'orders' && !isBoss && !isStorekeeper &&                 <button onClick={() => setEditing({})} className="proc-btn inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Yeni sifariş</button>}
++                {section === 'warehouse' && (
++                  <>
++                    {!isStorekeeper && (
++                      <>
++                        <input ref={whFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleWarehouseFile} />
++                        <button onClick={() => setWhAdding(true)} className="proc-btn inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Əlavə et</button>
++                        <button onClick={() => whFileRef.current?.click()} disabled={whImporting || replaceWh.isPending}
++                          title="Excel faylı seçin (Malın adı | Ölçü vahidi | Miqdarı) — bütün anbar əvəz olunur"
++                          className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110 disabled:opacity-50"
++                          style={{ borderColor: `${AMBER}80`, background: `${AMBER}1a`, color: AMBER }}>
++                          <Upload size={15} /> {whImporting || replaceWh.isPending ? 'Yüklənir…' : 'Tam yeniləmə'}
++                        </button>
++                      </>
++                    )}
++                    <button onClick={handleWarehouseExport}
++                      title="Hazırkı anbarı Excel-ə çıxar"
++                      className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110"
++                      style={{ borderColor: `${EM}80`, background: `${EM}1a`, color: EM }}>
++                      <Download size={15} /> Export
++                    </button>
++                  </>
++                )}
+                 {section === 'catalog' && isBoss && (
+                   <>
+                     <input ref={catFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleCatalogFile} />
+@@ -1406,8 +2119,8 @@ export default function Procurement({ me }) {
+             ? <SkeletonTable />
+             : pageRows.length === 0 ? (
+               <EmptyState icon={ShoppingCart} title={search || statusFilter ? 'Axtarışa uyğun sifariş yoxdur' : 'Hələ sifariş yoxdur'}
+-                hint={search || statusFilter ? 'Filtrləri təmizləyib yenidən cəhd edin' : (!isBoss ? 'İlk təchizat tələbini yaratmaq üçün düyməyə basın' : 'Specialistlər sifariş yaratdıqca burada görünəcək')}
+-                action={!isBoss && !search && !statusFilter ? (
++                hint={search || statusFilter ? 'Filtrləri təmizləyib yenidən cəhd edin' : (isStorekeeper ? 'Təsdiqlənmiş sifarişlər burada görünəcək' : (!isBoss ? 'İlk təchizat tələbini yaratmaq üçün düyməyə basın' : 'Specialistlər sifariş yaratdıqca burada görünəcək'))}
++                action={!isBoss && !isStorekeeper && !search && !statusFilter ? (
+                   <button onClick={() => setEditing({})} className="proc-btn proc-btn-grad inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px]" style={{ boxShadow: `0 10px 22px -10px ${EM}88` }}><Plus size={15} /> Yeni sifariş</button>
+                 ) : null} />
+             ) : (
+@@ -1579,6 +2292,55 @@ export default function Procurement({ me }) {
+             </div>
+           )}
+ 
++          {/* ── Anbar: yuxarıda əsas anbar, aşağıda Silinmələr ── */}
++          {section === 'warehouse' && (whQ.isLoading || remQ.isLoading
++            ? <SkeletonTable />
++            : (
++              <div className="space-y-6">
++                <div>
++                  {whNumbered.length === 0 ? (
++                    <EmptyState icon={Warehouse} title={whSearch ? 'Axtarışa uyğun məhsul yoxdur' : 'Anbar boşdur'}
++                      hint={whSearch ? 'Başqa ad yazın' : 'Excel-dən Tam yeniləmə edin və ya Əlavə et düyməsi ilə ilk məhsulu yaradın'} />
++                  ) : (
++                    <Table columns={WH_COLS} rows={whNumbered} minWidth={640}
++                      rowActions={(r) => (<>
++                        <button onClick={() => setWhEditing(r)} className="p-1.5 rounded-lg hover:bg-elevated text-ink-faint hover:text-[var(--accent)]" title={isStorekeeper ? 'Miqdarı artır' : 'Redaktə'}><Pencil size={14} /></button>
++                        {!isStorekeeper && (
++                          <button onClick={() => { if (window.confirm(`"${r.name}" anbardan silinsin? Silinmə tarixçəsindəki sətirlər qalacaq.`)) delWh.mutate(r); }} className="p-1.5 rounded-lg hover:bg-elevated text-ink-faint hover:text-[var(--status-red)]" title="Sil"><Trash2 size={14} /></button>
++                        )}
++                      </>)} />
++                  )}
++                </div>
++                <div>
++                  <div className="mb-2.5 flex flex-wrap items-center gap-2">
++                    <div className="flex items-center gap-2">
++                      <span className="grid size-6 place-items-center rounded-lg shrink-0" style={{ background: `${RED}1a`, color: RED }}>
++                        <Minus size={12} strokeWidth={2.5} />
++                      </span>
++                      <span className="text-[13px] font-bold">Silinmələr</span>
++                      <span className="text-[11px] text-ink-faint tabular-nums font-semibold">{removals.length} silinmə</span>
++                    </div>
++                    <div className="ml-auto">
++                      <button onClick={() => { setRemovalErr(''); setRemovalOpen(true); }}
++                        disabled={!warehouse.length}
++                        className="proc-btn inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">
++                        <Plus size={15} /> Silinmə yarat</button>
++                    </div>
++                  </div>
++                  {removalRows.length === 0 ? (
++                    <EmptyState icon={Minus} title="Hələ silinmə yoxdur"
++                      hint="Əsas anbardan silinən mallar burada görünəcək — miqdar avtomatik azalacaq" />
++                  ) : (
++                    <Table columns={REM_COLS} rows={removalRows} minWidth={860} onRowClick={(r) => setOpenRemoval(r.removal_id)} />
++                  )}
++                </div>
++              </div>
++            )
++          )}
++
++          {/* ── 1C: tamamilə boş bölmə (yalnız səhifə + naviqasiya) ── */}
++          {section === '1c' && null}
++
+           <footer className="mt-4 pt-2 border-t border-line text-center">
+             <p className="text-[11px] font-semibold text-ink-faint">Appina Procurement — Developed by <a href="https://www.linkedin.com/in/elinzrv/" target="_blank" rel="noopener noreferrer" title="LinkedIn — Elməddin Nəzərli" className="proc-grad font-black hover:opacity-80 hover:underline underline-offset-2">Elməddin Nəzərli</a></p>
+           </footer>
+@@ -1587,12 +2349,22 @@ export default function Procurement({ me }) {
+ 
+ 
+       {openOrder && <OrderDrawer orderId={openOrder} me={me} onClose={() => setOpenOrder(null)} onChanged={refetchAll} />}
++      {openRemoval && <RemovalDrawer removalId={openRemoval} stock={warehouse} me={me} onClose={() => setOpenRemoval(null)} onChanged={refetchAll} />}
+       {editing && (editing.id && !editDetail
+         ? <Modal onClose={() => setEditing(null)} maxWidth={400}><div className="p-8 text-center text-ink-faint">{editErr || 'Yüklənir…'}</div></Modal>
+         : <OrderForm order={editing.id ? { ...editing, ...editDetail?.order, items: editDetail?.items } : null}
+             onClose={() => { setEditing(null); setEditDetail(null); setSaveErr(''); }}
+             onSave={(form) => { setSaveErr(''); saveOrder.mutate(form); }} saving={saveOrder.isPending} serverErr={saveErr} />)}
+       {catEditing && <CatalogForm row={catEditing.id ? catEditing : null} firms={firms} onClose={() => setCatEditing(null)} onSave={(f) => saveCat.mutate(f)} saving={saveCat.isPending} />}
++      {whAdding && <WarehouseForm onClose={() => setWhAdding(false)} onSave={(f) => addWh.mutate(f)} saving={addWh.isPending} />}
++      {whEditing && <WarehouseEditForm row={whEditing} canFull={!isStorekeeper} onClose={() => setWhEditing(null)} onSave={(f) => saveWhEdit.mutate(f)} saving={saveWhEdit.isPending} />}
++      {removalOpen && (
++        <RemovalForm stock={warehouse}
++          nextDocNo={String((removals.reduce((m, r) => Math.max(m, Number(r.doc_no) || 0), 0) || removals.length) + 1)}
++          onClose={() => { setRemovalOpen(false); setRemovalErr(''); }}
++          onSave={(f) => { setRemovalErr(''); createRemoval.mutate(f); }}
++          saving={createRemoval.isPending} serverErr={removalErr} />
++      )}
+     </div>
+   );
+ }
+@@ -1615,20 +2387,23 @@ function Login({ onDone }) {
+     catch (e) { setErr(e?.message || 'Giriş alınmadı'); setBusy(null); }
+   };
+   const bosses = (users || []).filter((u) => u.proc_role === 'boss');
+-  const specs = (users || []).filter((u) => u.proc_role !== 'boss');
++  const specs = (users || []).filter((u) => u.proc_role === 'procurement_specialist');
++  const keepers = (users || []).filter((u) => u.proc_role === 'storekeeper');
+   const card = (u, label) => {
+     const boss = u.proc_role === 'boss';
+-    const accent = boss ? EM : BLUE;
++    const keeper = u.proc_role === 'storekeeper';
++    const accent = boss ? EM : keeper ? AMBER : BLUE;
++    const roleLabel = boss ? 'BOSS' : keeper ? 'ANBARDAR' : 'SPECIALIST';
+     return (
+       <button key={u.login} onClick={() => enter(u.login)} disabled={busy !== null}
+         className="proc-card hov group flex w-full items-center gap-3 p-3 text-left disabled:opacity-60">
+         <span className="grid size-11 shrink-0 place-items-center rounded-xl text-[12px] font-black text-white" style={{ background: `linear-gradient(135deg, ${accent}, ${boss ? BLUE : VIOLET})` }}>
+-          {boss ? 'B' : 'S'}
++          {boss ? 'B' : keeper ? 'A' : 'S'}
+         </span>
+         <span className="min-w-0 flex-1">
+           <span className="block truncate text-[13px] font-bold">{label}</span>
+           <span className={`proc-role mt-0.5 ${boss ? 'proc-role--boss' : 'proc-role--spec'}`}>
+-            {boss ? 'BOSS' : 'SPECIALIST'}
++            {roleLabel}
+           </span>
+         </span>
+         <span className="proc-btn shrink-0 rounded-lg px-3 py-2 text-[12px] transition group-hover:brightness-110" style={{ background: `linear-gradient(135deg, ${accent}, ${BLUE})` }}>
+@@ -1668,6 +2443,12 @@ function Login({ onDone }) {
+               <div className="space-y-2.5">{specs[0] && card(specs[0], 'Specialist')}</div>
+             </>
+           )}
++          {keepers.length > 0 && (
++            <>
++              <div className="proc-label" style={{ marginBottom: 8, marginTop: 20 }}>Anbar</div>
++              <div className="space-y-2.5">{keepers[0] && card(keepers[0], 'Anbardar')}</div>
++            </>
++          )}
+         </div>
+         {err && <p className="mt-3 text-center text-[12px] text-[var(--status-red)]">{err}</p>}
+         <p className="mt-5 text-center text-[10px] text-ink-faint">Şifrə yoxdur — kartına toxun, işə başla</p>

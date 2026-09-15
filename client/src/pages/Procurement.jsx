@@ -964,6 +964,7 @@ function RemovalComments({ removalId, me }) {
 // redaktədə başlığa köçürülür ki, məlumat itməsin.
 function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
   const qc = useQueryClient();
+  const isBoss = me?.proc_role === 'boss';
   const { data, isLoading } = useQuery({
     queryKey: ['proc', 'removal', removalId],
     queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}`),
@@ -1015,6 +1016,11 @@ function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
   const remove = useMutation({
     mutationFn: () => api.del(`/procurement/warehouse/removals/${removalId}`),
     onSuccess: () => { onChanged?.(); onClose?.(); },
+  });
+  const approve = useMutation({
+    mutationFn: () => api.post(`/procurement/warehouse/removals/${removalId}/approve`, {}),
+    onSuccess: refresh,
+    onError: (e) => window.alert(e?.message || 'Təsdiqlənmədi'),
   });
 
   const removal = data?.removal;
@@ -1080,6 +1086,7 @@ function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
         <div className="proc-hdr sticky top-0 bg-elevated z-10">
           <span className="proc-accent-bar proc-accent-bar--trio" />
           <h2 className="text-[14px] font-semibold text-ink">Silinmə №{removal?.doc_no ?? removalId}</h2>
+          {removal && <span className="proc-drawer-status"><StatusBadge value={removal.status || 'pending'} /></span>}
           {!editing && removal && (
             <button onClick={() => { setErr(''); setEditing(true); }} title="Redaktə et"
               className="proc-drawer-close text-ink-faint hover:text-ink hover:bg-elevated">
@@ -1192,6 +1199,17 @@ function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
               </table>
             </div>
             <RemovalComments removalId={removalId} me={me} />
+            {isBoss && (removal.status || 'pending') === 'pending' && (
+              <div className="proc-card p-4 flex flex-wrap items-center gap-2">
+                <Check size={15} color={EM} />
+                <span className="text-[12px] text-ink-muted">Yoxlayıb təsdiqləyin — stok artıq azalıb, status yalnız iz üçündür.</span>
+                <button onClick={() => approve.mutate()} disabled={approve.isPending}
+                  className="proc-btn ml-auto inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] disabled:opacity-50"
+                  style={{ boxShadow: `0 10px 22px -10px ${EM}88` }}>
+                  <Check size={15} strokeWidth={2.5} /> {approve.isPending ? '...' : 'Təsdiq et'}
+                </button>
+              </div>
+            )}
             {(remove.isError || remove.error) && <p className="text-[12px] text-[var(--status-red)]">{remove.error?.message || 'Silinmədi'}</p>}
           </div>
         )}
@@ -1830,6 +1848,7 @@ export default function Procurement({ me }) {
       destination: r.destination,
       created_at: r.created_at,
       count: (r.items || []).length,
+      status: r.status || 'pending',
       note: headerNote || lineNotes.join(' · '),
     };
   });
@@ -1842,10 +1861,11 @@ export default function Procurement({ me }) {
   ];
   const REM_COLS = [
     { key: 'doc_no', label: '№', width: '8%', cell: (r) => <span className="font-mono font-bold">{r.doc_no}</span> },
-    { key: 'created_at', label: 'Tarix', width: '18%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
-    { key: 'destination', label: 'Müştəri', width: '22%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
-    { key: 'count', label: 'Məhsul', width: '12%', cell: (r) => <span className="tabular-nums text-ink-muted">{r.count} məhsul</span> },
-    { key: 'note', label: 'Açıqlama', width: '40%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
+    { key: 'created_at', label: 'Tarix', width: '16%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
+    { key: 'destination', label: 'Müştəri', width: '18%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
+    { key: 'count', label: 'Məhsul', width: '10%', cell: (r) => <span className="tabular-nums text-ink-muted">{r.count} məhsul</span> },
+    { key: 'status', label: 'Status', width: '14%', cell: (r) => <StatusBadge value={r.status} /> },
+    { key: 'note', label: 'Açıqlama', width: '34%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
   ];
   const whNumbered = whRows.map((w, i) => ({ ...w, _n: i + 1 }));
 

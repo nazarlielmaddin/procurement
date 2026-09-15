@@ -128,6 +128,12 @@ function migrate(pdb) {
   pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_item_removal ON stock_removal_items (removal_id)');
   pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_item_product ON stock_removal_items (warehouse_item_id)');
 
+  // ── Silinmə təsdiq statusu (köhnə DB-lər üçün) ──
+  const remCols = new Set(pdb.prepare('PRAGMA table_info(stock_removals)').all().map((c) => c.name));
+  if (!remCols.has('status')) {
+    pdb.exec("ALTER TABLE stock_removals ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+  }
+
   // ── Silinmə kommentləri (köhnə DB-lər üçün) ──
   pdb.exec(`CREATE TABLE IF NOT EXISTS removal_comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -136,6 +136,9 @@ CREATE TABLE IF NOT EXISTS stock_removals (
   doc_no TEXT NOT NULL,
   destination TEXT NOT NULL,
   note TEXT NOT NULL DEFAULT '',
+  -- Təsdiq statusu: pending (gözləyir) → approved (təsdiqləndi). Stok hər iki
+  -- halda yaradılan kimi azalır — status yalnız təsdiq izidir, qapı deyil.
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved')),
   created_by INTEGER NULL REFERENCES users (id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

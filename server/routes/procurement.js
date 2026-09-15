@@ -609,6 +609,18 @@ r.delete('/warehouse/removals/:id', (req, res) => {
   res.json({ ok: true, restored });
 });
 
+// POST /api/procurement/warehouse/removals/:id/approve — silinməni təsdiqlə.
+// Boss-only (sifariş qərarı kimi). pending → approved. Stoka toxunmur —
+// stok silinmə yaradılanda artıq azalıb. Təkrar təsdiq → 409.
+r.post('/warehouse/removals/:id/approve', requireBoss, (req, res) => {
+  const d = procDb();
+  const removal = d.prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(req.params.id));
+  if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  if (removal.status === 'approved') throw new HttpError(409, 'already_approved', 'Silinmə artıq təsdiqlənib');
+  d.prepare('UPDATE stock_removals SET status = ? WHERE id = ?').run('approved', removal.id);
+  res.json({ ok: true, status: 'approved' });
+});
+
 // ── Silinmə kommentləri (flat: müəllif + mətn + tarix) ──
 function loadRemoval(id) {
   return procDb().prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(id)) || null;

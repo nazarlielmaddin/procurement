@@ -43,6 +43,7 @@ function read() {
     // Backfill for demos stored before warehouse/removals existed.
     if (!Array.isArray(s.warehouse)) { s.warehouse = seedWarehouse(); s.nextWarehouse = 1000; }
     if (!Array.isArray(s.removals)) { s.removals = []; s.nextRemoval = 1; s.nextRemovalLine = 1; }
+    for (const r of (s.removals || [])) if (!r.status) r.status = 'pending';
     if (!Array.isArray(s.removalComments)) { s.removalComments = []; s.nextRemovalComment = 1; }
     return s;
   }
@@ -146,7 +147,7 @@ async function mock(method, path, body) {
     });
     const removal = {
       id: state.nextRemoval++, doc_no: docNo, destination,
-      note: String(body?.note || '').trim(),
+      note: String(body?.note || '').trim(), status: 'pending',
       created_by_name: currentUser(state).full_name, created_at: now, items: [],
     };
     for (const b of built) {
@@ -208,6 +209,15 @@ async function mock(method, path, body) {
     }));
     write(state);
     return result({ ok: true, id: r.id, doc_no: r.doc_no });
+  }
+  const remApprove = cleanPath.match(/^\/procurement\/warehouse\/removals\/(\d+)\/approve$/);
+  if (remApprove && method === 'POST') {
+    if (currentUser(state).proc_role !== 'boss') throw Object.assign(new Error('boss_only'), { status: 403 });
+    const r = state.removals.find((x) => x.id === Number(remApprove[1]));
+    if (!r) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    if (r.status === 'approved') throw Object.assign(new Error('Silinmə artıq təsdiqlənib'), { status: 409 });
+    r.status = 'approved'; write(state);
+    return result({ ok: true, status: 'approved' });
   }
   if (remId && method === 'DELETE') {
     const i = state.removals.findIndex((x) => x.id === Number(remId[1]));

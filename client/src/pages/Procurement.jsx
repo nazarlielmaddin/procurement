@@ -1087,7 +1087,7 @@ function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
           <span className="proc-accent-bar proc-accent-bar--trio" />
           <h2 className="text-[14px] font-semibold text-ink">Silinmə №{removal?.doc_no ?? removalId}</h2>
           {removal && <span className="proc-drawer-status"><StatusBadge value={removal.status || 'pending'} /></span>}
-          {!editing && removal && (
+          {!editing && removal && (me?.proc_role !== 'storekeeper' || (removal.status || 'pending') !== 'approved') && (
             <button onClick={() => { setErr(''); setEditing(true); }} title="Redaktə et"
               className="proc-drawer-close text-ink-faint hover:text-ink hover:bg-elevated">
               <Pencil size={16} />

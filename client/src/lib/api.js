@@ -196,6 +196,9 @@ async function mock(method, path, body) {
   if (remId && method === 'PUT') {
     const r = state.removals.find((x) => x.id === Number(remId[1]));
     if (!r) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    if (currentUser(state)?.proc_role === 'storekeeper' && r.status === 'approved') {
+      throw Object.assign(new Error('Təsdiqlənmiş silinməni anbardar redaktə edə bilməz'), { status: 403 });
+    }
     const destination = body?.destination !== undefined ? String(body.destination).trim() : r.destination;
     if (!destination) throw Object.assign(new Error('Təyinat / obyekt mütləqdir'), { status: 400 });
     const lines = Array.isArray(body?.lines) ? body.lines : [];

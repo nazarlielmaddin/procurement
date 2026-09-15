@@ -569,6 +569,10 @@ r.put('/warehouse/removals/:id', (req, res) => {
   const d = procDb();
   const removal = d.prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(req.params.id));
   if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  // Anbardar təsdiqlənmiş silinməni redaktə edə bilməz (gözləyəni edə bilər).
+  if (isStorekeeper(req.user) && removal.status === 'approved') {
+    throw new HttpError(403, 'approved_locked', 'Təsdiqlənmiş silinməni anbardar redaktə edə bilməz');
+  }
   const oldLines = d.prepare('SELECT * FROM stock_removal_items WHERE removal_id = ?').all(removal.id);
   const body = req.body || {};
   const destination = body.destination !== undefined ? str(body.destination, 200) : removal.destination;

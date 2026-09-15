@@ -616,9 +616,9 @@ r.delete('/warehouse/removals/:id', (req, res) => {
 });
 
 // POST /api/procurement/warehouse/removals/:id/approve — silinməni təsdiqlə.
-// Hər rol təsdiqləyə bilər (boss + specialist + anbardar). pending → approved.
+// Yalnız boss + specialist (anbardar təsdiqləyə bilməz). pending → approved.
 // Stoka toxunmur — stok silinmə yaradılanda artıq azalıb. Təkrar təsdiq → 409.
-r.post('/warehouse/removals/:id/approve', (req, res) => {
+r.post('/warehouse/removals/:id/approve', denyStorekeeper, (req, res) => {
   const d = procDb();
   const removal = d.prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(req.params.id));
   if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });

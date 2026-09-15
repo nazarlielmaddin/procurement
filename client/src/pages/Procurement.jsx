@@ -964,6 +964,7 @@ function RemovalComments({ removalId, me }) {
 // redaktədə başlığa köçürülür ki, məlumat itməsin.
 function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
   const qc = useQueryClient();
+  const canApprove = me?.proc_role !== 'storekeeper'; // anbardar təsdiqləyə bilməz
   const { data, isLoading } = useQuery({
     queryKey: ['proc', 'removal', removalId],
     queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}`),
@@ -1198,7 +1199,7 @@ function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
               </table>
             </div>
             <RemovalComments removalId={removalId} me={me} />
-            {(removal.status || 'pending') === 'pending' && (
+            {canApprove && (removal.status || 'pending') === 'pending' && (
               <div className="proc-card p-4 flex flex-wrap items-center gap-2">
                 <Check size={15} color={EM} />
                 <span className="text-[12px] text-ink-muted">Təhvil Təslim aktı imzalanıbsa təsdiq edin.</span>

@@ -219,6 +219,7 @@ async function mock(method, path, body) {
   }
   const remApprove = cleanPath.match(/^\/procurement\/warehouse\/removals\/(\d+)\/approve$/);
   if (remApprove && method === 'POST') {
+    denyKeeper(state);
     const r = state.removals.find((x) => x.id === Number(remApprove[1]));
     if (!r) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
     if (r.status === 'approved') throw Object.assign(new Error('Silinmə artıq təsdiqlənib'), { status: 409 });

@@ -609,6 +609,31 @@ r.delete('/warehouse/removals/:id', (req, res) => {
   res.json({ ok: true, restored });
 });
 
+// ── Silinmə kommentləri (flat: müəllif + mətn + tarix) ──
+function loadRemoval(id) {
+  return procDb().prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(id)) || null;
+}
+
+r.get('/warehouse/removals/:id/comments', (req, res) => {
+  const removal = loadRemoval(req.params.id);
+  if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  const items = procDb().prepare(
+    'SELECT * FROM removal_comments WHERE removal_id = ? ORDER BY created_at, id',
+  ).all(removal.id);
+  res.json({ items });
+});
+
+r.post('/warehouse/removals/:id/comments', (req, res) => {
+  const removal = loadRemoval(req.params.id);
+  if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  const body = str(req.body?.body, 2000);
+  if (!body) throw new HttpError(400, 'body_required', 'Komment mətni mütləqdir');
+  const info = procDb().prepare(
+    'INSERT INTO removal_comments (removal_id, author_id, author_name, body) VALUES (?, ?, ?, ?)',
+  ).run(removal.id, req.user.id, req.user.full_name, body);
+  res.status(201).json({ id: Number(info.lastInsertRowid) });
+});
+
 // ── Dashboard (server aggregates; both roles) ──
 // Volume rule: status IN (approved, partially_approved), value = effectiveQty × snapshot.
 r.get('/dashboard', (req, res) => {

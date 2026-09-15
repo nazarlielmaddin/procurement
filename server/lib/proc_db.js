@@ -128,6 +128,17 @@ function migrate(pdb) {
   pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_item_removal ON stock_removal_items (removal_id)');
   pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_item_product ON stock_removal_items (warehouse_item_id)');
 
+  // ── Silinmə kommentləri (köhnə DB-lər üçün) ──
+  pdb.exec(`CREATE TABLE IF NOT EXISTS removal_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    removal_id INTEGER NOT NULL REFERENCES stock_removals (id) ON DELETE CASCADE,
+    author_id INTEGER NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+    author_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`);
+  pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_comments_removal ON removal_comments (removal_id, created_at)');
+
   // New sections for existing users (orders,catalog,dashboard → + warehouse,1c).
   try {
     for (const u of pdb.prepare('SELECT id, sections_csv FROM users').all()) {

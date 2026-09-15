@@ -32,6 +32,7 @@ function blankDemo() {
     catalog: catalogSeed, orders: [], nextOrder: 1, nextCatalog: 6, me: null,
     warehouse: seedWarehouse(), nextWarehouse: 1000,
     removals: [], nextRemoval: 1, nextRemovalLine: 1,
+    removalComments: [], nextRemovalComment: 1,
   };
 }
 
@@ -42,6 +43,7 @@ function read() {
     // Backfill for demos stored before warehouse/removals existed.
     if (!Array.isArray(s.warehouse)) { s.warehouse = seedWarehouse(); s.nextWarehouse = 1000; }
     if (!Array.isArray(s.removals)) { s.removals = []; s.nextRemoval = 1; s.nextRemovalLine = 1; }
+    if (!Array.isArray(s.removalComments)) { s.removalComments = []; s.nextRemovalComment = 1; }
     return s;
   }
   catch { return blankDemo(); }
@@ -215,8 +217,29 @@ async function mock(method, path, body) {
       const prod = state.warehouse.find((w) => w.id === ln.warehouse_item_id);
       if (prod) { prod.qty = Number(prod.qty) + Number(ln.qty); prod.updated_at = now; }
     }
-    state.removals.splice(i, 1); write(state);
+    state.removals.splice(i, 1);
+    state.removalComments = (state.removalComments || []).filter((c) => c.removal_id !== Number(remId[1]));
+    write(state);
     return result({ ok: true });
+  }
+  const remCom = cleanPath.match(/^\/procurement\/warehouse\/removals\/(\d+)\/comments$/);
+  if (remCom && method === 'GET') {
+    const rid = Number(remCom[1]);
+    if (!state.removals.some((x) => x.id === rid)) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    return result({ items: (state.removalComments || []).filter((c) => c.removal_id === rid) });
+  }
+  if (remCom && method === 'POST') {
+    const rid = Number(remCom[1]);
+    if (!state.removals.some((x) => x.id === rid)) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    const b = String(body?.body || '').trim();
+    if (!b) throw Object.assign(new Error('Komment mətni mütləqdir'), { status: 400 });
+    const c = {
+      id: state.nextRemovalComment++, removal_id: rid,
+      author_id: currentUser(state).id, author_name: currentUser(state).full_name,
+      body: b, created_at: new Date().toISOString(),
+    };
+    state.removalComments.push(c); write(state);
+    return result({ id: c.id });
   }
   if (path.startsWith('/procurement/orders/') && path.endsWith('/mentionables')) return result({ users });
   if (path.startsWith('/procurement/orders/') && !path.endsWith('/decision') && !path.endsWith('/reopen') && method === 'GET') return result(detail(state, path.split('/')[3]));

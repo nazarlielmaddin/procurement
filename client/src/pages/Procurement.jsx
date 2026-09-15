@@ -889,8 +889,80 @@ function OrderDrawer({ orderId, me, onClose, onChanged }) {
   );
 }
 
-// ── Silinmə detalları drawer-i (sifariş drawer-i məntiqi): baxış + redaktə + silmə ──
-function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
+// ── Silinmə kommentləri (flat: avatar + ad + vaxt + mətn, sifariş üslubunda) ──
+function RemovalComments({ removalId, me }) {
+  const qc = useQueryClient();
+  const [text, setText] = useState('');
+  const [err, setErr] = useState('');
+  const { data } = useQuery({
+    queryKey: ['proc', 'removal', removalId, 'comments'],
+    queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}/comments`),
+  });
+  const comments = data?.items || [];
+
+  const send = useMutation({
+    mutationFn: (body) => api.post(`/procurement/warehouse/removals/${removalId}/comments`, { body }),
+    onSuccess: () => {
+      setText(''); setErr('');
+      qc.invalidateQueries({ queryKey: ['proc', 'removal', removalId, 'comments'] });
+    },
+    onError: (e) => setErr(e?.message || 'Komment göndərilmədi'),
+  });
+  const post = () => {
+    const body = text.trim();
+    if (!body || send.isPending) return;
+    setErr('');
+    send.mutate(body);
+  };
+
+  return (
+    <div className="proc-card p-4">
+      <div className="mb-2.5 flex items-center gap-2 text-[12px] font-bold">
+        <MessageSquare size={15} color={EM} /> Kommentlər
+        <span className="rounded-full bg-elevated px-2 py-px text-[10px] font-bold tabular-nums text-ink-muted">{comments.length}</span>
+      </div>
+      <div className="proc-scroll max-h-64 space-y-3 overflow-y-auto pr-1">
+        {comments.length === 0 && <p className="text-[11px] text-ink-faint">Hələ komment yoxdur — ilk yazan siz olun</p>}
+        {comments.map((c) => (
+          <div key={c.id} className="flex gap-2">
+            <span className="grid size-7 shrink-0 place-items-center rounded-full text-[10px] font-black text-white"
+              style={{ background: avatarGrad(c.author_name) }} title={c.author_name}>
+              {initialsOf(c.author_name)}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="rounded-xl border border-line bg-bg px-3 py-2">
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                  <b className="min-w-0 truncate text-[11px] text-ink">{c.author_name}</b>
+                  {me?.id === c.author_id && <span className="text-[9px] font-semibold text-ink-faint">· siz</span>}
+                  <span className="ml-auto text-[10px] text-ink-faint" title={fmtDateTime(c.created_at)}>{fmtAgo(c.created_at)}</span>
+                </div>
+                <div className="mt-1 text-[12px] leading-relaxed whitespace-pre-wrap break-words">{c.body}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {err && <p className="mt-2 text-[12px] text-[var(--status-red)]">{err}</p>}
+      <div className="mt-2.5 flex gap-2">
+        <span className="grid size-9 shrink-0 place-items-center rounded-full text-[11px] font-black text-white"
+          style={{ background: avatarGrad(me?.full_name) }}>{initialsOf(me?.full_name)}</span>
+        <input value={text} onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); post(); } }}
+          placeholder="Komment yazın…"
+          className="proc-input flex-1 text-[13px]" />
+        <button onClick={post} disabled={send.isPending || !text.trim()}
+          className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-40">
+          {send.isPending ? '…' : 'Göndər'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Silinmə detalları drawer-i (sifariş drawer-i məntiqi): baxış + redaktə + silmə + kommentlər ──
+// Açıqlama silinmə-səviyyəlidir (1 silinmə = 1 açıqlama); köhnə sətir-açıqlamaları
+// redaktədə başlığa köçürülür ki, məlumat itməsin.
+function RemovalDrawer({ removalId, stock, me, onClose, onChanged }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['proc', 'removal', removalId],
@@ -912,15 +984,15 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
   const seededFor = useRef(null);
   useEffect(() => {
     if (data?.removal && seededFor.current !== removalId) {
+      const legacy = [...new Set((data.removal.items || []).map((ln) => String(ln?.note || '').trim()).filter(Boolean))].join(' · ');
       setDocNo(data.removal.doc_no || '');
       setDestination(data.removal.destination || '');
-      setHeaderNote(data.removal.note || '');
+      setHeaderNote(data.removal.note || legacy);
       setLines((data.removal.items || []).map((ln) => ({
         warehouse_item_id: ln.warehouse_item_id ? String(ln.warehouse_item_id) : '',
         product_name: ln.product_name,
         unit: ln.unit,
         qty: String(ln.qty),
-        note: ln.note || '',
       })));
       setEditing(false);
       setErr('');
@@ -947,6 +1019,9 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
 
   const removal = data?.removal;
   const items = removal?.items || [];
+  // Köhnə sətir-açıqlamaları (yeni modeldə başlıqdadır; göstərmək üçün fallback).
+  const legacyNotes = [...new Set(items.map((ln) => String(ln?.note || '').trim()).filter(Boolean))].join(' · ');
+  const shownNote = String(removal?.note || '').trim() || legacyNotes;
   const stockById = new Map((stock || []).map((s) => [String(s.id), s]));
   // Bu silinmədəki köhnə miqdarlar — redaktədə mövcudluq = hazırkı stok + köhnə.
   const oldTotals = new Map();
@@ -993,7 +1068,6 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
       lines: lines.map((ln) => ({
         warehouse_item_id: Number(ln.warehouse_item_id),
         qty: Number(ln.qty),
-        note: String(ln.note || '').trim(),
       })),
     });
   };
@@ -1031,8 +1105,8 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                   <input value={docNo} onChange={(e) => setDocNo(e.target.value)} className="proc-input" /></label>
                 <label className="text-[13px] block"><span className="proc-label">Təyinat / obyekt *</span>
                   <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Məs: Hotel" className="proc-input" /></label>
-                <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Qeyd</span>
-                  <input value={headerNote} onChange={(e) => setHeaderNote(e.target.value)} className="proc-input" /></label>
+                <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Açıqlama</span>
+                  <input value={headerNote} onChange={(e) => setHeaderNote(e.target.value)} placeholder="Məs: istifadədən çıxarılıb" className="proc-input" /></label>
               </div>
             </div>
             <div className="proc-card overflow-hidden">
@@ -1043,7 +1117,6 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                     <th className="px-2.5 py-1.5">Məhsul *</th>
                     <th className="px-2.5 py-1.5 text-right">Mövcud</th>
                     <th className="px-2.5 py-1.5 text-right">Miqdar *</th>
-                    <th className="px-2.5 py-1.5">Açıqlama</th>
                     <th className="px-2.5 py-1.5 w-8" />
                   </tr>
                 </thead>
@@ -1069,10 +1142,6 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                           <input type="number" step="any" min="0" value={ln.qty} onChange={(e) => setLine(idx, 'qty', e.target.value)}
                             className="proc-input w-20 px-1.5 py-1 text-[11px] text-right tabular-nums" />
                         </td>
-                        <td className="px-2.5 py-1.5">
-                          <input value={ln.note} onChange={(e) => setLine(idx, 'note', e.target.value)}
-                            placeholder="Açıqlama" className="proc-input min-w-[110px] px-1.5 py-1 text-[11px]" />
-                        </td>
                         <td className="px-2.5 py-1.5 text-center">
                           <button onClick={() => setLines((p) => (p.length > 1 ? p.filter((_, i) => i !== idx) : p))} className="proc-rowbtn proc-rowbtn--danger"><Trash2 size={13} /></button>
                         </td>
@@ -1082,7 +1151,7 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                 </tbody>
               </table>
             </div>
-            <button onClick={() => setLines((p) => [...p, { warehouse_item_id: '', product_name: '', unit: '', qty: '', note: '' }])}
+            <button onClick={() => setLines((p) => [...p, { warehouse_item_id: '', product_name: '', unit: '', qty: '' }])}
               className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-semibold text-ink-muted hover:text-ink hover:border-[var(--accent)]">
               <Plus size={14} /> Sətir əlavə et</button>
             {(err || save.isError) && <p className="text-[12px] text-[var(--status-red)]">{err || save.error?.message}</p>}
@@ -1100,7 +1169,7 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                 <div><div className="proc-label">Təyinat / obyekt</div><div className="font-semibold break-words">{removal.destination}</div></div>
                 <div><div className="proc-label">Tarix</div><div>{fmtDateTime(removal.created_at)}</div></div>
                 <div><div className="proc-label">Yaradan</div><div className="break-words">{removal.created_by_name || '—'}</div></div>
-                {removal.note && <div className="col-span-1 sm:col-span-2"><div className="proc-label">Qeyd</div><div className="break-words">{removal.note}</div></div>}
+                {shownNote && <div className="col-span-1 sm:col-span-2"><div className="proc-label">Açıqlama</div><div className="break-words">{shownNote}</div></div>}
               </div>
             </div>
             <div className="proc-card overflow-hidden">
@@ -1110,7 +1179,6 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                   <tr className="text-left text-[10px] uppercase tracking-wider text-ink-faint">
                     <th className="px-2.5 py-1.5">Məhsul</th>
                     <th className="px-2.5 py-1.5 text-right">Miqdar</th>
-                    <th className="px-2.5 py-1.5">Açıqlama</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1118,12 +1186,12 @@ function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
                     <tr key={it.id} className="border-t border-line/50">
                       <td className="px-2.5 py-2"><span className="block break-words">{it.product_name}</span><div className="text-[10px] text-ink-faint">{it.unit}</div></td>
                       <td className="px-2.5 py-2 text-right tabular-nums font-semibold whitespace-nowrap">{it.qty} {it.unit}</td>
-                      <td className="px-2.5 py-2 text-ink-muted break-words">{it.note || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            <RemovalComments removalId={removalId} me={me} />
             {(remove.isError || remove.error) && <p className="text-[12px] text-[var(--status-red)]">{remove.error?.message || 'Silinmədi'}</p>}
           </div>
         )}
@@ -1244,12 +1312,13 @@ function WarehouseForm({ onClose, onSave, saving }) {
   );
 }
 
-const blankRemovalLine = () => ({ warehouse_item_id: '', qty: '', note: '' });
+const blankRemovalLine = () => ({ warehouse_item_id: '', qty: '' });
 
-// ── Silinmə yarat: № + Təyinat/obyekt + bir neçə məhsul (məhsul + miqdar + açıqlama) ──
+// ── Silinmə yarat: № + Təyinat/obyekt + 1 açıqlama + bir neçə məhsul (məhsul + miqdar) ──
 function RemovalForm({ stock, nextDocNo, onClose, onSave, saving, serverErr }) {
   const [docNo, setDocNo] = useState(nextDocNo || '');
   const [destination, setDestination] = useState('');
+  const [note, setNote] = useState('');
   const [lines, setLines] = useState([blankRemovalLine()]);
   const [err, setErr] = useState('');
   const setLine = (idx, k, v) => setLines((p) => p.map((ln, i) => (i === idx ? { ...ln, [k]: v } : ln)));
@@ -1269,10 +1338,10 @@ function RemovalForm({ stock, nextDocNo, onClose, onSave, saving, serverErr }) {
     onSave({
       doc_no: docNo.trim(),
       destination: destination.trim(),
+      note: note.trim(),
       lines: lines.map((ln) => ({
         warehouse_item_id: Number(ln.warehouse_item_id),
         qty: Number(ln.qty),
-        note: String(ln.note || '').trim(),
       })),
     });
   };
@@ -1293,16 +1362,17 @@ function RemovalForm({ stock, nextDocNo, onClose, onSave, saving, serverErr }) {
             <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="Məs: 1" className="proc-input" /></label>
           <label className="text-[13px] block"><span className="proc-label">Təyinat / obyekt *</span>
             <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Məs: Hotel" className="proc-input" /></label>
+          <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Açıqlama</span>
+            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Məs: istifadədən çıxarılıb" className="proc-input" /></label>
         </div>
         <div className="overflow-x-auto rounded-xl border border-line">
-          <table className="w-full min-w-[560px] text-[12px]">
+          <table className="w-full min-w-[440px] text-[12px]">
             <thead>
               <tr className="border-b border-line bg-elevated/40 text-left text-[10px] uppercase tracking-wider text-ink-faint">
                 <th className="px-2.5 py-1.5 w-8 text-center">№</th>
                 <th className="px-2.5 py-1.5">Məhsul *</th>
                 <th className="px-2.5 py-1.5 w-24 text-right">Stok</th>
                 <th className="px-2.5 py-1.5 w-24 text-right">Miqdar *</th>
-                <th className="px-2.5 py-1.5">Açıqlama</th>
                 <th className="px-2.5 py-1.5 w-8" />
               </tr>
             </thead>
@@ -1325,9 +1395,6 @@ function RemovalForm({ stock, nextDocNo, onClose, onSave, saving, serverErr }) {
                     <td className="px-2.5 py-1.5">
                       <input type="number" step="any" min="0" value={ln.qty} onChange={(e) => setLine(idx, 'qty', e.target.value)}
                         className="proc-input w-20 px-2 py-1.5 text-right tabular-nums" /></td>
-                    <td className="px-2.5 py-1.5">
-                      <input value={ln.note} onChange={(e) => setLine(idx, 'note', e.target.value)}
-                        placeholder="Məs: istifadədən çıxarılıb" className="proc-input min-w-[140px] px-2 py-1.5" /></td>
                     <td className="px-2.5 py-1.5 text-center">
                       <button onClick={() => setLines((p) => (p.length > 1 ? p.filter((_, i) => i !== idx) : p))} className="proc-rowbtn proc-rowbtn--danger"><Trash2 size={13} /></button>
                     </td>
@@ -2187,7 +2254,7 @@ export default function Procurement({ me }) {
 
 
       {openOrder && <OrderDrawer orderId={openOrder} me={me} onClose={() => setOpenOrder(null)} onChanged={refetchAll} />}
-      {openRemoval && <RemovalDrawer removalId={openRemoval} stock={warehouse} onClose={() => setOpenRemoval(null)} onChanged={refetchAll} />}
+      {openRemoval && <RemovalDrawer removalId={openRemoval} stock={warehouse} me={me} onClose={() => setOpenRemoval(null)} onChanged={refetchAll} />}
       {editing && (editing.id && !editDetail
         ? <Modal onClose={() => setEditing(null)} maxWidth={400}><div className="p-8 text-center text-ink-faint">{editErr || 'Yüklənir…'}</div></Modal>
         : <OrderForm order={editing.id ? { ...editing, ...editDetail?.order, items: editDetail?.items } : null}

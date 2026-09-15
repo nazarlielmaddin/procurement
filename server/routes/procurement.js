@@ -513,6 +513,102 @@ r.post('/warehouse/removals', (req, res) => {
   res.status(201).json({ id: removalId, doc_no: docNo });
 });
 
+// GET /api/procurement/warehouse/removals/:id — silinmə detalı (drawer üçün).
+r.get('/warehouse/removals/:id', (req, res) => {
+  const d = procDb();
+  const row = d.prepare(
+    `SELECT r.*, u.full_name AS created_by_name FROM stock_removals r
+     LEFT JOIN users u ON u.id = r.created_by WHERE r.id = ?`,
+  ).get(Number(req.params.id));
+  if (!row) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  res.json({ removal: removalWithItems(d, row) });
+});
+
+// PUT /api/procurement/warehouse/removals/:id — silinməni redaktə et.
+// Body: { doc_no?, destination?, note?, lines: [{ warehouse_item_id, qty, note? }] }.
+// Stok məntiqi (delta): bütün yeni sətirlər ÖNCƏ yoxlanılır (heç bir yazı
+// aparılmadan) — köhnə sətirlərin miqdarı virtual geri qaytarılmış stokla
+// müqayisə olunur; sonra header + sətirlər əvəz olunur və hər məhsul üzrə
+// fərq (köhnə − yeni) stoka tətbiq edilir. Yazılar ardıcıl (tək connection).
+r.put('/warehouse/removals/:id', (req, res) => {
+  const d = procDb();
+  const removal = d.prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(req.params.id));
+  if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  const oldLines = d.prepare('SELECT * FROM stock_removal_items WHERE removal_id = ?').all(removal.id);
+  const body = req.body || {};
+  const destination = body.destination !== undefined ? str(body.destination, 200) : removal.destination;
+  if (!destination) throw new HttpError(400, 'destination_required', 'Təyinat / obyekt mütləqdir (məs: Hotel)');
+  const docNo = body.doc_no !== undefined ? (str(body.doc_no, 40) || removal.doc_no) : removal.doc_no;
+  const headerNote = body.note !== undefined ? str(body.note, 2000) : removal.note;
+  const lines = body.lines;
+  if (!Array.isArray(lines) || !lines.length) throw new HttpError(400, 'lines_required', 'Ən azı bir məhsul seçin');
+  if (lines.length > 200) throw new HttpError(400, 'too_many_lines', 'Maksimum 200 sətir');
+
+  // Köhnə sətirlərin məhsul üzrə cəmi (silinmiş məhsul → bərpa mümkün deyil, 0).
+  const oldByProd = new Map();
+  for (const ol of oldLines) {
+    if (ol.warehouse_item_id == null) continue;
+    oldByProd.set(ol.warehouse_item_id, (oldByProd.get(ol.warehouse_item_id) || 0) + Number(ol.qty));
+  }
+
+  const clean = lines.map((ln, i) => {
+    const wid = Number(ln?.warehouse_item_id);
+    const qty = num(ln?.qty);
+    const note = str(ln?.note, 2000);
+    if (!Number.isInteger(wid) || wid <= 0) throw new HttpError(400, 'product_required', `Sətir ${i + 1}: məhsul seçin`);
+    if (!Number.isFinite(qty) || qty <= 0) throw new HttpError(400, 'qty_invalid', `Sətir ${i + 1}: miqdar 0-dan böyük olmalıdır`);
+    const prod = d.prepare('SELECT * FROM warehouse_items WHERE id = ?').get(wid);
+    if (!prod) throw new HttpError(404, 'product_not_found', `Sətir ${i + 1}: məhsul tapılmadı`);
+    return { prod, qty, note };
+  });
+  // Eyni məhsul bir neçə sətirdə ola bilər — cəm yoxlanılır.
+  const newByProd = new Map();
+  for (const ln of clean) newByProd.set(ln.prod.id, (newByProd.get(ln.prod.id) || 0) + ln.qty);
+  for (const [wid, total] of newByProd) {
+    const prod = d.prepare('SELECT * FROM warehouse_items WHERE id = ?').get(wid);
+    const restored = (oldByProd.get(wid) || 0);
+    const avail = Number(prod.qty) + restored;
+    if (total > avail) {
+      throw new HttpError(400, 'qty_exceeds', `"${prod.name}" — stokda ${avail} ${prod.unit} var (bu silinmədəki ${restored} daxil), ${total} saxlanıla bilməz`);
+    }
+  }
+
+  const now = new Date().toISOString();
+  d.prepare('UPDATE stock_removals SET doc_no = ?, destination = ?, note = ? WHERE id = ?')
+    .run(docNo, destination, headerNote, removal.id);
+  d.prepare('DELETE FROM stock_removal_items WHERE removal_id = ?').run(removal.id);
+  const insLine = d.prepare(
+    'INSERT INTO stock_removal_items (removal_id, warehouse_item_id, product_name, unit, qty, note) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  const adjStock = d.prepare('UPDATE warehouse_items SET qty = qty + ?, updated_at = ? WHERE id = ?');
+  for (const wid of new Set([...oldByProd.keys(), ...newByProd.keys()])) {
+    const delta = (oldByProd.get(wid) || 0) - (newByProd.get(wid) || 0);
+    if (delta !== 0) adjStock.run(delta, now, wid);
+  }
+  for (const ln of clean) insLine.run(removal.id, ln.prod.id, ln.prod.name, ln.prod.unit, ln.qty, ln.note);
+  res.json({ ok: true, id: removal.id, doc_no: docNo });
+});
+
+// DELETE /api/procurement/warehouse/removals/:id — silinməni sil, miqdarları stoka geri qaytar.
+// Məhsul artıq anbarda yoxdursa (Tam yeniləmə ilə silinibsə) həmin sətir bərpa
+// olunmur — tarixçə snapshot-u (ad/vahid) itmir, sadəcə stok toxunulmur.
+r.delete('/warehouse/removals/:id', (req, res) => {
+  const d = procDb();
+  const removal = d.prepare('SELECT * FROM stock_removals WHERE id = ?').get(Number(req.params.id));
+  if (!removal) return res.status(404).json({ error: 'removal_not_found', message: 'Silinmə tapılmadı' });
+  const lines = d.prepare('SELECT * FROM stock_removal_items WHERE removal_id = ?').all(removal.id);
+  const now = new Date().toISOString();
+  const restore = d.prepare('UPDATE warehouse_items SET qty = qty + ?, updated_at = ? WHERE id = ?');
+  let restored = 0;
+  for (const ln of lines) {
+    if (ln.warehouse_item_id == null) continue;
+    const info = restore.run(ln.qty, now, ln.warehouse_item_id);
+    restored += Number(info.changes || 0) ? 1 : 0;
+  }
+  d.prepare('DELETE FROM stock_removals WHERE id = ?').run(removal.id);
+  res.json({ ok: true, restored });
+});
+
 // ── Dashboard (server aggregates; both roles) ──
 // Volume rule: status IN (approved, partially_approved), value = effectiveQty × snapshot.
 r.get('/dashboard', (req, res) => {

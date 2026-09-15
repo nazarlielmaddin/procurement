@@ -159,6 +159,65 @@ async function mock(method, path, body) {
     state.removals.push(removal); write(state);
     return result({ id: removal.id, doc_no: removal.doc_no });
   }
+  const remId = cleanPath.match(/^\/procurement\/warehouse\/removals\/(\d+)$/);
+  if (remId && method === 'GET') {
+    const r = state.removals.find((x) => x.id === Number(remId[1]));
+    if (!r) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    return result({ removal: r });
+  }
+  if (remId && method === 'PUT') {
+    const r = state.removals.find((x) => x.id === Number(remId[1]));
+    if (!r) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    const destination = body?.destination !== undefined ? String(body.destination).trim() : r.destination;
+    if (!destination) throw Object.assign(new Error('Təyinat / obyekt mütləqdir'), { status: 400 });
+    const lines = Array.isArray(body?.lines) ? body.lines : [];
+    if (!lines.length) throw Object.assign(new Error('Ən azı bir məhsul seçin'), { status: 400 });
+    const oldByProd = new Map();
+    for (const ol of r.items) {
+      if (ol.warehouse_item_id == null) continue;
+      oldByProd.set(ol.warehouse_item_id, (oldByProd.get(ol.warehouse_item_id) || 0) + Number(ol.qty));
+    }
+    const now = new Date().toISOString();
+    const built = lines.map((ln) => {
+      const prod = state.warehouse.find((w) => w.id === Number(ln?.warehouse_item_id));
+      const q = Number(ln?.qty);
+      if (!prod) throw Object.assign(new Error('Məhsul tapılmadı'), { status: 404 });
+      if (!Number.isFinite(q) || q <= 0) throw Object.assign(new Error(`"${prod.name}" — miqdar yanlışdır`), { status: 400 });
+      return { prod, q, note: String(ln?.note || '').trim() };
+    });
+    const newByProd = new Map();
+    for (const b of built) newByProd.set(b.prod.id, (newByProd.get(b.prod.id) || 0) + b.q);
+    for (const [wid, total] of newByProd) {
+      const prod = state.warehouse.find((w) => w.id === wid);
+      const avail = Number(prod.qty) + (oldByProd.get(wid) || 0);
+      if (total > avail) throw Object.assign(new Error(`"${prod.name}" — cəmi ${avail} ${prod.unit} mövcuddur`), { status: 400 });
+    }
+    for (const wid of new Set([...oldByProd.keys(), ...newByProd.keys()])) {
+      const prod = state.warehouse.find((w) => w.id === wid);
+      if (prod) { prod.qty = Number(prod.qty) + (oldByProd.get(wid) || 0) - (newByProd.get(wid) || 0); prod.updated_at = now; }
+    }
+    r.doc_no = String(body?.doc_no || '').trim() || r.doc_no;
+    r.destination = destination;
+    if (body?.note !== undefined) r.note = String(body.note).trim();
+    r.items = built.map((b) => ({
+      id: state.nextRemovalLine++, removal_id: r.id,
+      warehouse_item_id: b.prod.id, product_name: b.prod.name, unit: b.prod.unit,
+      qty: b.q, note: b.note,
+    }));
+    write(state);
+    return result({ ok: true, id: r.id, doc_no: r.doc_no });
+  }
+  if (remId && method === 'DELETE') {
+    const i = state.removals.findIndex((x) => x.id === Number(remId[1]));
+    if (i < 0) throw Object.assign(new Error('Silinmə tapılmadı'), { status: 404 });
+    const now = new Date().toISOString();
+    for (const ln of state.removals[i].items) {
+      const prod = state.warehouse.find((w) => w.id === ln.warehouse_item_id);
+      if (prod) { prod.qty = Number(prod.qty) + Number(ln.qty); prod.updated_at = now; }
+    }
+    state.removals.splice(i, 1); write(state);
+    return result({ ok: true });
+  }
   if (path.startsWith('/procurement/orders/') && path.endsWith('/mentionables')) return result({ users });
   if (path.startsWith('/procurement/orders/') && !path.endsWith('/decision') && !path.endsWith('/reopen') && method === 'GET') return result(detail(state, path.split('/')[3]));
   if (cleanPath === '/procurement/orders' && method === 'GET') return result({ orders: state.orders });

@@ -889,6 +889,249 @@ function OrderDrawer({ orderId, me, onClose, onChanged }) {
   );
 }
 
+// ── Silinmə detalları drawer-i (sifariş drawer-i məntiqi): baxış + redaktə + silmə ──
+function RemovalDrawer({ removalId, stock, onClose, onChanged }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['proc', 'removal', removalId],
+    queryFn: () => api.get(`/procurement/warehouse/removals/${removalId}`),
+  });
+  const [editing, setEditing] = useState(false);
+  const [docNo, setDocNo] = useState('');
+  const [destination, setDestination] = useState('');
+  const [headerNote, setHeaderNote] = useState('');
+  const [lines, setLines] = useState([]);
+  const [err, setErr] = useState('');
+
+  // Double-click guard: açılışı edən klik paneli bağlaya bilməz (OrderDrawer ilə eyni).
+  const openedAt = useRef(Date.now());
+  const safeClose = () => { if (Date.now() - openedAt.current > 500) onClose?.(); };
+
+  // Edit formasını açılan silinmə üzrə BİR dəfə doldur — sonrakı refetch-lər
+  // yazılmış dəyərləri əzməsin (OrderDrawer-dakı seededFor nümunəsi).
+  const seededFor = useRef(null);
+  useEffect(() => {
+    if (data?.removal && seededFor.current !== removalId) {
+      setDocNo(data.removal.doc_no || '');
+      setDestination(data.removal.destination || '');
+      setHeaderNote(data.removal.note || '');
+      setLines((data.removal.items || []).map((ln) => ({
+        warehouse_item_id: ln.warehouse_item_id ? String(ln.warehouse_item_id) : '',
+        product_name: ln.product_name,
+        unit: ln.unit,
+        qty: String(ln.qty),
+        note: ln.note || '',
+      })));
+      setEditing(false);
+      setErr('');
+      seededFor.current = removalId;
+    }
+  }, [data, removalId]);
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['proc', 'removal', removalId] });
+    qc.invalidateQueries({ queryKey: ['proc', 'warehouse'] });
+    qc.invalidateQueries({ queryKey: ['proc', 'warehouse-removals'] });
+    onChanged?.();
+  };
+
+  const save = useMutation({
+    mutationFn: (form) => api.put(`/procurement/warehouse/removals/${removalId}`, form),
+    onSuccess: () => { setEditing(false); setErr(''); refresh(); },
+    onError: (e) => setErr(e?.message || 'Yadda saxlanmadı'),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.del(`/procurement/warehouse/removals/${removalId}`),
+    onSuccess: () => { onChanged?.(); onClose?.(); },
+  });
+
+  const removal = data?.removal;
+  const items = removal?.items || [];
+  const stockById = new Map((stock || []).map((s) => [String(s.id), s]));
+  // Bu silinmədəki köhnə miqdarlar — redaktədə mövcudluq = hazırkı stok + köhnə.
+  const oldTotals = new Map();
+  for (const ln of items) {
+    if (ln.warehouse_item_id == null) continue;
+    oldTotals.set(String(ln.warehouse_item_id), (oldTotals.get(String(ln.warehouse_item_id)) || 0) + Number(ln.qty));
+  }
+  const availFor = (wid) => {
+    const s = stockById.get(String(wid));
+    if (!s) return null;
+    return Number(s.qty) + (oldTotals.get(String(wid)) || 0);
+  };
+
+  const askDelete = () => {
+    if (remove.isPending) return;
+    if (!window.confirm(`Silinmə №${removal?.doc_no} silinəcək və ${items.length} sətir stoka geri qaytarılacaq. Davam edilsin?`)) return;
+    remove.mutate();
+  };
+
+  const setLine = (idx, k, v) => setLines((p) => p.map((ln, i) => (i === idx ? { ...ln, [k]: v } : ln)));
+
+  const submit = () => {
+    setErr('');
+    if (!destination.trim()) { setErr('Təyinat / obyekt mütləqdir (məs: Hotel)'); return; }
+    if (!lines.length) { setErr('Ən azı bir məhsul seçin'); return; }
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      const prod = stockById.get(String(ln.warehouse_item_id));
+      if (!prod) { setErr(`Sətir ${i + 1} — məhsul seçin (stokda olmayanı yenidən seçin və ya sətri silin)`); return; }
+      if (String(ln.qty).trim() === '' || !(Number(ln.qty) > 0)) { setErr(`"${prod.name}" — miqdar 0-dan böyük olmalıdır`); return; }
+    }
+    // Eyni məhsul bir neçə sətirdədirsə cəm yoxlanılır (server də yoxlayır).
+    const sums = new Map();
+    for (const ln of lines) sums.set(String(ln.warehouse_item_id), (sums.get(String(ln.warehouse_item_id)) || 0) + Number(ln.qty));
+    for (const [wid, total] of sums) {
+      const avail = availFor(wid);
+      const prod = stockById.get(wid);
+      if (avail != null && total > avail) { setErr(`"${prod.name}" — cəmi ${avail} ${prod.unit} mövcuddur (bu silinmədəki daxil)`); return; }
+    }
+    save.mutate({
+      doc_no: docNo.trim(),
+      destination: destination.trim(),
+      note: headerNote.trim(),
+      lines: lines.map((ln) => ({
+        warehouse_item_id: Number(ln.warehouse_item_id),
+        qty: Number(ln.qty),
+        note: String(ln.note || '').trim(),
+      })),
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50" onClick={safeClose}>
+      <div className="proc-backdrop absolute inset-0 backdrop-blur-[3px]" style={{ background: 'color-mix(in oklab, var(--bg) 55%, transparent)' }} />
+      <div className="proc-drawer absolute top-0 right-0 h-full w-full bg-elevated shadow-float flex flex-col proc-scroll overflow-y-auto" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
+        <Style />
+        <div className="proc-hdr sticky top-0 bg-elevated z-10">
+          <span className="proc-accent-bar proc-accent-bar--trio" />
+          <h2 className="text-[14px] font-semibold text-ink">Silinmə №{removal?.doc_no ?? removalId}</h2>
+          {!editing && removal && (
+            <button onClick={() => { setErr(''); setEditing(true); }} title="Redaktə et"
+              className="proc-drawer-close text-ink-faint hover:text-ink hover:bg-elevated">
+              <Pencil size={16} />
+            </button>
+          )}
+          <button onClick={askDelete} disabled={remove.isPending} title="Silinməni sil (stoka geri qaytar)"
+            className="proc-drawer-close text-[var(--status-red)] hover:bg-[var(--status-red)]/10 disabled:opacity-50">
+            <Trash2 size={17} />
+          </button>
+          <button onClick={onClose} className="proc-drawer-close text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
+        </div>
+        {isLoading || !removal ? (
+          <div className="space-y-4 p-4">
+            <div className="proc-skel h-28 rounded-2xl" />
+            <div className="proc-skel h-44 rounded-2xl" style={{ opacity: .8 }} />
+          </div>
+        ) : editing ? (
+          <div className="p-4 space-y-4">
+            <div className="proc-card p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="text-[13px] block"><span className="proc-label">№</span>
+                  <input value={docNo} onChange={(e) => setDocNo(e.target.value)} className="proc-input" /></label>
+                <label className="text-[13px] block"><span className="proc-label">Təyinat / obyekt *</span>
+                  <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Məs: Hotel" className="proc-input" /></label>
+                <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Qeyd</span>
+                  <input value={headerNote} onChange={(e) => setHeaderNote(e.target.value)} className="proc-input" /></label>
+              </div>
+            </div>
+            <div className="proc-card overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-line text-[12px] font-bold">Məhsullar</div>
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="text-left text-[10px] uppercase tracking-wider text-ink-faint">
+                    <th className="px-2.5 py-1.5">Məhsul *</th>
+                    <th className="px-2.5 py-1.5 text-right">Mövcud</th>
+                    <th className="px-2.5 py-1.5 text-right">Miqdar *</th>
+                    <th className="px-2.5 py-1.5">Açıqlama</th>
+                    <th className="px-2.5 py-1.5 w-8" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((ln, idx) => {
+                    const gone = ln.warehouse_item_id && !stockById.get(String(ln.warehouse_item_id));
+                    const avail = availFor(ln.warehouse_item_id);
+                    return (
+                      <tr key={idx} className="border-t border-line/50">
+                        <td className="px-2.5 py-1.5">
+                          <select value={ln.warehouse_item_id} onChange={(e) => setLine(idx, 'warehouse_item_id', e.target.value)}
+                            className="proc-input min-w-[140px] px-1.5 py-1 text-[11px]">
+                            <option value="">— Seçin —</option>
+                            {gone && <option value={ln.warehouse_item_id} disabled>{ln.product_name} (stokda yoxdur)</option>}
+                            {(stock || []).map((s) => (
+                              <option key={s.id} value={s.id}>{s.name} ({s.qty} {s.unit})</option>
+                            ))}
+                          </select>
+                          {gone && <div className="mt-1 text-[10px] text-[var(--status-red)]">Yenidən seçin və ya sətri silin</div>}
+                        </td>
+                        <td className="px-2.5 py-1.5 text-right tabular-nums text-ink-muted">{avail != null ? avail : '—'}</td>
+                        <td className="px-2.5 py-1.5 text-right">
+                          <input type="number" step="any" min="0" value={ln.qty} onChange={(e) => setLine(idx, 'qty', e.target.value)}
+                            className="proc-input w-20 px-1.5 py-1 text-[11px] text-right tabular-nums" />
+                        </td>
+                        <td className="px-2.5 py-1.5">
+                          <input value={ln.note} onChange={(e) => setLine(idx, 'note', e.target.value)}
+                            placeholder="Açıqlama" className="proc-input min-w-[110px] px-1.5 py-1 text-[11px]" />
+                        </td>
+                        <td className="px-2.5 py-1.5 text-center">
+                          <button onClick={() => setLines((p) => (p.length > 1 ? p.filter((_, i) => i !== idx) : p))} className="proc-rowbtn proc-rowbtn--danger"><Trash2 size={13} /></button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <button onClick={() => setLines((p) => [...p, { warehouse_item_id: '', product_name: '', unit: '', qty: '', note: '' }])}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-semibold text-ink-muted hover:text-ink hover:border-[var(--accent)]">
+              <Plus size={14} /> Sətir əlavə et</button>
+            {(err || save.isError) && <p className="text-[12px] text-[var(--status-red)]">{err || save.error?.message}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setEditing(false); setErr(''); }} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
+              <button onClick={submit} disabled={save.isPending} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">
+                {save.isPending ? '...' : 'Yadda saxla'}</button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 space-y-4">
+            <div className="proc-card p-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-[12px]">
+                <div><div className="proc-label">№</div><div className="font-mono font-bold">{removal.doc_no}</div></div>
+                <div><div className="proc-label">Təyinat / obyekt</div><div className="font-semibold break-words">{removal.destination}</div></div>
+                <div><div className="proc-label">Tarix</div><div>{fmtDateTime(removal.created_at)}</div></div>
+                <div><div className="proc-label">Yaradan</div><div className="break-words">{removal.created_by_name || '—'}</div></div>
+                {removal.note && <div className="col-span-1 sm:col-span-2"><div className="proc-label">Qeyd</div><div className="break-words">{removal.note}</div></div>}
+              </div>
+            </div>
+            <div className="proc-card overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-line text-[12px] font-bold">Məhsullar</div>
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="text-left text-[10px] uppercase tracking-wider text-ink-faint">
+                    <th className="px-2.5 py-1.5">Məhsul</th>
+                    <th className="px-2.5 py-1.5 text-right">Miqdar</th>
+                    <th className="px-2.5 py-1.5">Açıqlama</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((it) => (
+                    <tr key={it.id} className="border-t border-line/50">
+                      <td className="px-2.5 py-2"><span className="block break-words">{it.product_name}</span><div className="text-[10px] text-ink-faint">{it.unit}</div></td>
+                      <td className="px-2.5 py-2 text-right tabular-nums font-semibold whitespace-nowrap">{it.qty} {it.unit}</td>
+                      <td className="px-2.5 py-2 text-ink-muted break-words">{it.note || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {(remove.isError || remove.error) && <p className="text-[12px] text-[var(--status-red)]">{remove.error?.message || 'Silinmədi'}</p>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Catalog form (boss only) ──
 // Known firms — bunlar firma cədvəllərinin adlarıdır
 const FIRM_OPTIONS = ['İmza', 'Premier'];
@@ -1215,6 +1458,7 @@ export default function Procurement({ me }) {
   const [whSearch, setWhSearch] = useState('');
   const [whAdding, setWhAdding] = useState(false);
   const [removalOpen, setRemovalOpen] = useState(false);
+  const [openRemoval, setOpenRemoval] = useState(null); // id = drawer açıq
   const [removalErr, setRemovalErr] = useState('');
   const whFileRef = useRef(null);
   const [whImporting, setWhImporting] = useState(false);
@@ -1513,6 +1757,7 @@ export default function Procurement({ me }) {
     for (const ln of (r.items || [])) {
       removalRows.push({
         id: ln.id,
+        removal_id: r.id,
         doc_no: r.doc_no,
         destination: r.destination,
         created_at: r.created_at,
@@ -1927,7 +2172,7 @@ export default function Procurement({ me }) {
                     <EmptyState icon={Minus} title="Hələ silinmə yoxdur"
                       hint="Əsas anbardan silinən mallar burada görünəcək — miqdar avtomatik azalacaq" />
                   ) : (
-                    <Table columns={REM_COLS} rows={removalRows} minWidth={860} />
+                    <Table columns={REM_COLS} rows={removalRows} minWidth={860} onRowClick={(r) => setOpenRemoval(r.removal_id)} />
                   )}
                 </div>
               </div>
@@ -1945,6 +2190,7 @@ export default function Procurement({ me }) {
 
 
       {openOrder && <OrderDrawer orderId={openOrder} me={me} onClose={() => setOpenOrder(null)} onChanged={refetchAll} />}
+      {openRemoval && <RemovalDrawer removalId={openRemoval} stock={warehouse} onClose={() => setOpenRemoval(null)} onChanged={refetchAll} />}
       {editing && (editing.id && !editDetail
         ? <Modal onClose={() => setEditing(null)} maxWidth={400}><div className="p-8 text-center text-ink-faint">{editErr || 'Yüklənir…'}</div></Modal>
         : <OrderForm order={editing.id ? { ...editing, ...editDetail?.order, items: editDetail?.items } : null}

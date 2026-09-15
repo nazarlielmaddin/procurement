@@ -366,6 +366,153 @@ r.get('/orders/:id/mentionables', (req, res) => {
   res.json({ users: rows.map((u) => ({ id: u.id, full_name: u.full_name, login: u.login, proc_role: u.proc_role })) });
 });
 
+// ── Anbar (warehouse): Excel "anbar faktiki sayım" 1:1 ──
+// Malın adı | Ölçü vahidi | Miqdarı → name | unit | qty. Real CRUD +
+// persistent SQLite. Read: hamı; write: hamı (rol məhdudu yoxdur —
+// boss da, specialist də anbarla işləyir).
+function prepWarehouse(body) {
+  const data = {};
+  if (body.name !== undefined) data.name = str(body.name, 500);
+  if (body.unit !== undefined) data.unit = str(body.unit, 40) || 'ədəd';
+  if (body.qty !== undefined) data.qty = num(body.qty);
+  return data;
+}
+
+r.get('/warehouse', (req, res) => {
+  const q = str(req.query.q, 200).toLowerCase();
+  const items = procDb().prepare('SELECT * FROM warehouse_items ORDER BY name ASC').all();
+  if (!q) return res.json({ items });
+  res.json({ items: items.filter((it) => `${it.name} ${it.unit}`.toLowerCase().includes(q)) });
+});
+
+r.post('/warehouse', (req, res) => {
+  const data = prepWarehouse(req.body || {});
+  if (!data.name) throw new HttpError(400, 'name_required', 'Məhsul adı mütləqdir');
+  if (!data.unit) data.unit = 'ədəd';
+  if (!Number.isFinite(data.qty) || data.qty < 0) throw new HttpError(400, 'qty_invalid', 'Miqdar 0 və ya böyük olmalıdır');
+  try {
+    const now = new Date().toISOString();
+    const info = procDb().prepare(
+      'INSERT INTO warehouse_items (name, unit, qty, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(data.name, data.unit, data.qty, now, now);
+    res.status(201).json({ id: Number(info.lastInsertRowid) });
+  } catch (e) {
+    if (String(e?.message).includes('UNIQUE')) throw new HttpError(409, 'duplicate_product', 'Bu məhsul artıq anbardadır (ad + vahid)');
+    throw e;
+  }
+});
+
+r.put('/warehouse/:id', (req, res) => {
+  const data = prepWarehouse(req.body || {});
+  const keys = Object.keys(data).filter((k) => ['name', 'unit', 'qty'].includes(k));
+  if (!keys.length) throw new HttpError(400, 'no_fields');
+  if (data.qty !== undefined && (!Number.isFinite(data.qty) || data.qty < 0)) {
+    throw new HttpError(400, 'qty_invalid', 'Miqdar 0 və ya böyük olmalıdır');
+  }
+  try {
+    procDb().prepare(`UPDATE warehouse_items SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at = ? WHERE id = ?`)
+      .run(...keys.map((k) => data[k]), new Date().toISOString(), Number(req.params.id));
+    res.json({ ok: true });
+  } catch (e) {
+    if (String(e?.message).includes('UNIQUE')) throw new HttpError(409, 'duplicate_product', 'Bu məhsul artıq anbardadır (ad + vahid)');
+    throw e;
+  }
+});
+
+// POST /api/procurement/warehouse/replace — Tam yeniləmə (Excel import).
+// Body: { items: [{ name, unit, qty }] }. Bütün anbar əvəz olunur.
+// Silinmə tarixçəsi (stock_removal_items) sağ qalır
+// (warehouse_item_id ON DELETE SET NULL + snapshot ad/vahid).
+r.post('/warehouse/replace', (req, res) => {
+  const raw = req.body?.items;
+  if (!Array.isArray(raw)) throw new HttpError(400, 'items_required');
+  if (raw.length > 10000) throw new HttpError(400, 'too_many_items', 'Maksimum 10000 məhsul');
+  const seen = new Set();
+  const clean = raw.map((it, i) => {
+    const name = str(it?.name, 500);
+    const unit = str(it?.unit, 40) || 'ədəd';
+    const qty = num(it?.qty);
+    if (!name) throw new HttpError(400, 'name_required', `Sətir ${i + 1}: məhsul adı boşdur`);
+    if (!Number.isFinite(qty) || qty < 0) throw new HttpError(400, 'qty_invalid', `Sətir ${i + 1} (${name}): miqdar yanlışdır`);
+    const dupKey = `${name.toLowerCase()}::${unit.toLowerCase()}`;
+    if (seen.has(dupKey)) throw new HttpError(400, 'duplicate_product', `Təkrar məhsul: ${name} (${unit})`);
+    seen.add(dupKey);
+    return { name, unit, qty };
+  });
+  const d = procDb();
+  const now = new Date().toISOString();
+  d.prepare('DELETE FROM warehouse_items').run();
+  const ins = d.prepare(
+    'INSERT INTO warehouse_items (name, unit, qty, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+  );
+  for (const c of clean) ins.run(c.name, c.unit, c.qty, now, now);
+  res.json({ ok: true, count: clean.length });
+});
+
+// ── Silinmələr: başlıq (№ + təyinat + tarix) + sətirlər (məhsul + miqdar + açıqlama) ──
+function removalWithItems(d, r) {
+  const items = d.prepare('SELECT * FROM stock_removal_items WHERE removal_id = ? ORDER BY id').all(r.id);
+  return { ...r, items };
+}
+
+r.get('/warehouse/removals', (req, res) => {
+  const d = procDb();
+  const rows = d.prepare(
+    `SELECT r.*, u.full_name AS created_by_name FROM stock_removals r
+     LEFT JOIN users u ON u.id = r.created_by ORDER BY r.id DESC LIMIT 500`,
+  ).all();
+  res.json({ items: rows.map((x) => removalWithItems(d, x)) });
+});
+
+// POST /api/procurement/warehouse/removals — Silinmə yarat.
+// Body: { doc_no?, destination, note?, lines: [{ warehouse_item_id, qty, note? }] }.
+// Məntiq: stok yoxlanılır (artıq silinməyə 400) → əsas anbardan çıxılır →
+// silinmə sənədi + sətirlər yazılır. Hamısı ardıcıl (tək shared connection).
+r.post('/warehouse/removals', (req, res) => {
+  const d = procDb();
+  const body = req.body || {};
+  const destination = str(body.destination, 200);
+  if (!destination) throw new HttpError(400, 'destination_required', 'Təyinat / obyekt mütləqdir (məs: Hotel)');
+  let docNo = str(body.doc_no, 40);
+  if (!docNo) {
+    const mx = d.prepare('SELECT MAX(id) AS m FROM stock_removals').get()?.m || 0;
+    docNo = String(Number(mx) + 1);
+  }
+  const headerNote = str(body.note, 2000);
+  const lines = body.lines;
+  if (!Array.isArray(lines) || !lines.length) throw new HttpError(400, 'lines_required', 'Ən azı bir məhsul seçin');
+  if (lines.length > 200) throw new HttpError(400, 'too_many_lines', 'Maksimum 200 sətir');
+
+  const clean = lines.map((ln, i) => {
+    const wid = Number(ln?.warehouse_item_id);
+    const qty = num(ln?.qty);
+    const note = str(ln?.note, 2000);
+    if (!Number.isInteger(wid) || wid <= 0) throw new HttpError(400, 'product_required', `Sətir ${i + 1}: məhsul seçin`);
+    if (!Number.isFinite(qty) || qty <= 0) throw new HttpError(400, 'qty_invalid', `Sətir ${i + 1}: miqdar 0-dan böyük olmalıdır`);
+    const prod = d.prepare('SELECT * FROM warehouse_items WHERE id = ?').get(wid);
+    if (!prod) throw new HttpError(404, 'product_not_found', `Sətir ${i + 1}: məhsul tapılmadı`);
+    if (qty > Number(prod.qty)) {
+      throw new HttpError(400, 'qty_exceeds', `"${prod.name}" — stokda ${prod.qty} ${prod.unit} var, ${qty} silinə bilməz`);
+    }
+    return { prod, qty, note };
+  });
+
+  const now = new Date().toISOString();
+  const info = d.prepare(
+    'INSERT INTO stock_removals (doc_no, destination, note, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(docNo, destination, headerNote, req.user?.id ?? null, now);
+  const removalId = Number(info.lastInsertRowid);
+  const insLine = d.prepare(
+    'INSERT INTO stock_removal_items (removal_id, warehouse_item_id, product_name, unit, qty, note) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  const decStock = d.prepare('UPDATE warehouse_items SET qty = qty - ?, updated_at = ? WHERE id = ?');
+  for (const ln of clean) {
+    insLine.run(removalId, ln.prod.id, ln.prod.name, ln.prod.unit, ln.qty, ln.note);
+    decStock.run(ln.qty, now, ln.prod.id);
+  }
+  res.status(201).json({ id: removalId, doc_no: docNo });
+});
+
 // ── Dashboard (server aggregates; both roles) ──
 // Volume rule: status IN (approved, partially_approved), value = effectiveQty × snapshot.
 r.get('/dashboard', (req, res) => {

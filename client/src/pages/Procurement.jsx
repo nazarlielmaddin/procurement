@@ -7,6 +7,7 @@ import {
   Check, CheckCircle2, Clock, XCircle, PieChart as PieIcon, MessageSquare, History,
   Lock, ChevronLeft, ChevronRight, Minus, PanelLeftClose, PanelLeftOpen,
   LogOut, SlidersHorizontal, Upload, FileSpreadsheet, Eye, RotateCcw, TrendingUp, Download, Reply, Menu,
+  Warehouse, Database,
 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -962,10 +963,158 @@ function CatalogForm({ row, firms, onClose, onSave, saving }) {
   );
 }
 
+// ── Anbar: Əlavə et formu (Malın adı | Ölçü vahidi | Miqdarı) ──
+function WarehouseForm({ onClose, onSave, saving }) {
+  const [form, setForm] = useState({ name: '', unit: 'ədəd', qty: '' });
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  const submit = () => {
+    setErr('');
+    if (!form.name.trim()) { setErr('Məhsul adı mütləqdir'); return; }
+    if (String(form.qty).trim() === '' || !(Number(form.qty) >= 0)) { setErr('Miqdarı daxil edin (0 və ya böyük)'); return; }
+    onSave({ name: form.name.trim(), unit: form.unit.trim() || 'ədəd', qty: Number(form.qty) });
+  };
+  return (
+    <Modal onClose={onClose} maxWidth={480}>
+      <div className="proc-modal-hdr">
+        <span className="proc-accent-bar" />
+        <h3 className="flex items-center gap-2 text-[14px] font-bold">
+          <Warehouse size={18} color={EM} />
+          Anbara əlavə et
+        </h3>
+        <button onClick={onClose} className="rounded-lg p-1.5 text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
+      </div>
+      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="text-[13px] block col-span-1 sm:col-span-2"><span className="proc-label">Malın adı *</span>
+          <input value={form.name} onChange={set('name')} placeholder="Məs: HDMI kabel 2m" className="proc-input" /></label>
+        <label className="text-[13px] block"><span className="proc-label">Ölçü vahidi</span>
+          <input value={form.unit} onChange={set('unit')} placeholder="ədəd" className="proc-input" /></label>
+        <label className="text-[13px] block"><span className="proc-label">Miqdarı *</span>
+          <input type="number" step="any" min="0" value={form.qty} onChange={set('qty')} className="proc-input tabular-nums" /></label>
+      </div>
+      {err && <p className="px-5 pb-1 text-[12px] text-[var(--status-red)]">{err}</p>}
+      <div className="proc-modal-ftr">
+        <button onClick={onClose} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
+        <button onClick={submit} disabled={saving} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">{saving ? '...' : 'Yadda saxla'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+const blankRemovalLine = () => ({ warehouse_item_id: '', qty: '', note: '' });
+
+// ── Silinmə yarat: № + Təyinat/obyekt + bir neçə məhsul (məhsul + miqdar + açıqlama) ──
+function RemovalForm({ stock, nextDocNo, onClose, onSave, saving, serverErr }) {
+  const [docNo, setDocNo] = useState(nextDocNo || '');
+  const [destination, setDestination] = useState('');
+  const [lines, setLines] = useState([blankRemovalLine()]);
+  const [err, setErr] = useState('');
+  const setLine = (idx, k, v) => setLines((p) => p.map((ln, i) => (i === idx ? { ...ln, [k]: v } : ln)));
+  const stockById = new Map((stock || []).map((s) => [String(s.id), s]));
+
+  const submit = () => {
+    setErr('');
+    if (!destination.trim()) { setErr('Təyinat / obyekt mütləqdir (məs: Hotel)'); return; }
+    if (!lines.length) { setErr('Ən azı bir məhsul seçin'); return; }
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      const prod = stockById.get(String(ln.warehouse_item_id));
+      if (!prod) { setErr(`Sətir ${i + 1} — məhsul seçin`); return; }
+      if (String(ln.qty).trim() === '' || !(Number(ln.qty) > 0)) { setErr(`"${prod.name}" — miqdar 0-dan böyük olmalıdır`); return; }
+      if (Number(ln.qty) > Number(prod.qty)) { setErr(`"${prod.name}" — stokda ${prod.qty} ${prod.unit} var, artıq silinə bilməz`); return; }
+    }
+    onSave({
+      doc_no: docNo.trim(),
+      destination: destination.trim(),
+      lines: lines.map((ln) => ({
+        warehouse_item_id: Number(ln.warehouse_item_id),
+        qty: Number(ln.qty),
+        note: String(ln.note || '').trim(),
+      })),
+    });
+  };
+
+  return (
+    <Modal onClose={onClose} maxWidth={720}>
+      <div className="proc-modal-hdr shrink-0">
+        <span className="proc-accent-bar" />
+        <h3 className="flex items-center gap-2 text-[14px] font-bold">
+          <Minus size={18} color={EM} />
+          Silinmə yarat
+        </h3>
+        <button onClick={onClose} className="rounded-lg p-1.5 text-ink-faint hover:text-ink hover:bg-elevated"><X size={18} /></button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-5 space-y-4 proc-scroll">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="text-[13px] block"><span className="proc-label">№</span>
+            <input value={docNo} onChange={(e) => setDocNo(e.target.value)} placeholder="Məs: 1" className="proc-input" /></label>
+          <label className="text-[13px] block"><span className="proc-label">Təyinat / obyekt *</span>
+            <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Məs: Hotel" className="proc-input" /></label>
+        </div>
+        <div className="overflow-x-auto rounded-xl border border-line">
+          <table className="w-full min-w-[560px] text-[12px]">
+            <thead>
+              <tr className="border-b border-line bg-elevated/40 text-left text-[10px] uppercase tracking-wider text-ink-faint">
+                <th className="px-2.5 py-1.5 w-8 text-center">№</th>
+                <th className="px-2.5 py-1.5">Məhsul *</th>
+                <th className="px-2.5 py-1.5 w-24 text-right">Stok</th>
+                <th className="px-2.5 py-1.5 w-24 text-right">Miqdar *</th>
+                <th className="px-2.5 py-1.5">Açıqlama</th>
+                <th className="px-2.5 py-1.5 w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((ln, idx) => {
+                const prod = stockById.get(String(ln.warehouse_item_id));
+                return (
+                  <tr key={idx} className="border-b border-line/60 last:border-b-0">
+                    <td className="px-2.5 py-1.5 text-center text-ink-faint">{idx + 1}</td>
+                    <td className="px-2.5 py-1.5">
+                      <select value={ln.warehouse_item_id} onChange={(e) => setLine(idx, 'warehouse_item_id', e.target.value)}
+                        className="proc-input min-w-[160px] px-2 py-1.5">
+                        <option value="">— Seçin —</option>
+                        {(stock || []).map((s) => (
+                          <option key={s.id} value={s.id}>{s.name} ({s.qty} {s.unit})</option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums text-ink-muted">{prod ? `${prod.qty} ${prod.unit}` : '—'}</td>
+                    <td className="px-2.5 py-1.5">
+                      <input type="number" step="any" min="0" value={ln.qty} onChange={(e) => setLine(idx, 'qty', e.target.value)}
+                        className="proc-input w-20 px-2 py-1.5 text-right tabular-nums" /></td>
+                    <td className="px-2.5 py-1.5">
+                      <input value={ln.note} onChange={(e) => setLine(idx, 'note', e.target.value)}
+                        placeholder="Məs: istifadədən çıxarılıb" className="proc-input min-w-[140px] px-2 py-1.5" /></td>
+                    <td className="px-2.5 py-1.5 text-center">
+                      <button onClick={() => setLines((p) => (p.length > 1 ? p.filter((_, i) => i !== idx) : p))} className="proc-rowbtn proc-rowbtn--danger"><Trash2 size={13} /></button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <button onClick={() => setLines((p) => [...p, blankRemovalLine()])}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[13px] font-semibold text-ink-muted hover:text-ink hover:border-[var(--accent)]">
+            <Plus size={14} /> Sətir əlavə et</button>
+        </div>
+        {(err || serverErr) && <p className="text-[12px] text-[var(--status-red)]">{err || serverErr}</p>}
+      </div>
+      <div className="proc-modal-ftr shrink-0">
+        <button onClick={onClose} className="rounded-lg px-4 py-2 text-[13px] font-semibold text-ink-muted hover:bg-elevated">Ləğv</button>
+        <button onClick={submit} disabled={saving} className="proc-btn rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">{saving ? '...' : 'Təsdiqlə'}</button>
+      </div>
+    </Modal>
+  );
+}
+
 const SECTIONS = [
   { key: 'panel', label: 'Panel', icon: LayoutDashboard },
   { key: 'orders', label: 'Sifarişlər', icon: ShoppingCart, endpoint: '/procurement/orders' },
   { key: 'catalog', label: 'Qiymət kataloqu', icon: Tag, endpoint: '/procurement/catalog' },
+  { key: 'warehouse', label: 'Anbar', icon: Warehouse, endpoint: '/procurement/warehouse' },
+  { key: '1c', label: '1C', icon: Database },
 ];
 
 function PieTooltip({ active, payload }) {
@@ -1062,6 +1211,13 @@ export default function Procurement({ me }) {
   const [firmFilter, setFirmFilter] = useState('');
   const catFileRef = useRef(null);
   const [importing, setImporting] = useState(false);
+  // ── Anbar state ──
+  const [whSearch, setWhSearch] = useState('');
+  const [whAdding, setWhAdding] = useState(false);
+  const [removalOpen, setRemovalOpen] = useState(false);
+  const [removalErr, setRemovalErr] = useState('');
+  const whFileRef = useRef(null);
+  const [whImporting, setWhImporting] = useState(false);
   const active = SECTIONS.find((s) => s.key === section) || SECTIONS[0];
   const qc = useQueryClient();
 
@@ -1090,13 +1246,15 @@ export default function Procurement({ me }) {
     .map((c) => c.firm)
     .filter((firm) => firm && firm !== 'UMUMI'))].sort((a, b) => a.localeCompare(b, 'az'));
 
-  useEffect(() => { setSearch(''); setPage(1); setStatusFilter(''); setFirmFilter(''); }, [section]);
+  useEffect(() => { setSearch(''); setPage(1); setStatusFilter(''); setFirmFilter(''); setWhSearch(''); }, [section]);
 
   const refetchAll = () => {
     qc.invalidateQueries({ queryKey: ['proc', 'orders'] });
     qc.invalidateQueries({ queryKey: ['proc', 'dashboard'] });
     qc.invalidateQueries({ queryKey: ['proc', 'catalog'] });
     qc.invalidateQueries({ queryKey: ['proc', 'catalog-firms'] });
+    qc.invalidateQueries({ queryKey: ['proc', 'warehouse'] });
+    qc.invalidateQueries({ queryKey: ['proc', 'warehouse-removals'] });
   };
   const [saveErr, setSaveErr] = useState('');
   const saveOrder = useMutation({
@@ -1124,6 +1282,106 @@ export default function Procurement({ me }) {
     onSuccess: (d, vars) => { refetchAll(); window.alert(vars?.firm ? `${d?.count ?? ''} məhsul yükləndi — "${vars.firm}" firması yeniləndi` : `${d?.count ?? ''} məhsul yükləndi — bütün kataloq yeniləndi`); },
     onError: (e) => window.alert(e?.message || 'Import alınmadı'),
   });
+
+  // ── Anbar queries (only when the warehouse tab is active) ──
+  const whQ = useQuery({
+    queryKey: ['proc', 'warehouse'],
+    queryFn: () => api.get('/procurement/warehouse'),
+    enabled: section === 'warehouse',
+  });
+  const remQ = useQuery({
+    queryKey: ['proc', 'warehouse-removals'],
+    queryFn: () => api.get('/procurement/warehouse/removals'),
+    enabled: section === 'warehouse',
+  });
+  const warehouse = whQ.data?.items || [];
+  const removals = remQ.data?.items || [];
+
+  const addWh = useMutation({
+    mutationFn: (form) => api.post('/procurement/warehouse', form),
+    onSuccess: () => { setWhAdding(false); refetchAll(); },
+    onError: (e) => window.alert(e?.message || 'Yadda saxlanmadı'),
+  });
+  const replaceWh = useMutation({
+    mutationFn: ({ items }) => api.post('/procurement/warehouse/replace', { items }),
+    onSuccess: (d) => { refetchAll(); window.alert(`${d?.count ?? ''} məhsul yükləndi — anbar tam yeniləndi`); },
+    onError: (e) => window.alert(e?.message || 'Import alınmadı'),
+  });
+  const createRemoval = useMutation({
+    mutationFn: (form) => api.post('/procurement/warehouse/removals', form),
+    onSuccess: () => { setRemovalOpen(false); setRemovalErr(''); refetchAll(); },
+    onError: (e) => setRemovalErr(e?.message || 'Silinmə yaradılmadı'),
+  });
+
+  // Anbar export: hazırkı anbar Excel formatında (Malın adı | Ölçü vahidi | Miqdarı).
+  const handleWarehouseExport = async () => {
+    if (!warehouse.length) { window.alert('Anbar boşdur — export ediləcək məhsul yoxdur'); return; }
+    try {
+      const XLSX = await import('xlsx');
+      const sheet = XLSX.utils.aoa_to_sheet([
+        ['Malın adı', 'Ölçü vahidi', 'Miqdarı'],
+        ...warehouse.map((w) => [w.name, w.unit, Number(w.qty)]),
+      ]);
+      sheet['!cols'] = [{ wch: 52 }, { wch: 12 }, { wch: 12 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, sheet, 'Anbar');
+      const d = new Date();
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      XLSX.writeFile(wb, `anbar-${stamp}.xlsx`);
+    } catch (err) {
+      window.alert(err?.message || 'Excel yazılmadı');
+    }
+  };
+
+  // Tam yeniləmə: Excel (Malın adı | Ölçü vahidi | Miqdarı) → bütün anbar əvəz olunur.
+  const handleWarehouseFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setWhImporting(true);
+    try {
+      const buf = await f.arrayBuffer();
+      const XLSX = await import('xlsx');
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      if (!ws) { window.alert('Excel-də vərəq tapılmadı'); return; }
+      const grid = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      if (!grid.length) { window.alert('Fayl boşdur'); return; }
+      const normCell = (v) => String(v ?? '').trim();
+      const numCell = (v) => {
+        if (v === '' || v == null) return NaN;
+        if (typeof v === 'number') return v;
+        let s = String(v).replace(/\s/g, '');
+        if (s.includes(',') && s.includes('.')) s = s.replace(/\./g, '').replace(',', '.');
+        else if (s.includes(',')) s = s.replace(',', '.');
+        return Number(s);
+      };
+      const head = grid[0].map((c) => normCell(c).toLowerCase());
+      const findCol = (keys) => head.findIndex((c) => keys.some((k) => c.includes(k)));
+      const nameIdx = findCol(['mal', 'ad', 'name', 'məhsul', 'mehsul']);
+      const unitIdx = findCol(['ölçü', 'olcu', 'vahid', 'unit']);
+      const qtyIdx = findCol(['miqdar', 'say', 'qty', 'miqdar']);
+      const looksHeader = nameIdx >= 0 || unitIdx >= 0 || qtyIdx >= 0;
+      const col = (i, fallback) => (i >= 0 ? i : fallback);
+      const body = looksHeader ? grid.slice(1) : grid;
+      const items = [];
+      for (let i = 0; i < body.length; i++) {
+        const r = body[i];
+        const name = normCell(r[col(nameIdx, 0)]);
+        if (!name) continue; // tam boş sətir
+        items.push({ name, unit: normCell(r[col(unitIdx, 1)]) || 'ədəd', qty: numCell(r[col(qtyIdx, 2)]) });
+      }
+      if (!items.length) { window.alert('Heç bir məhsul tapılmadı. Format: Malın adı | Ölçü vahidi | Miqdarı'); return; }
+      const bad = items.find((it) => !it.name || !Number.isFinite(it.qty) || it.qty < 0);
+      if (bad) { window.alert(`Yoxlayın: "${bad.name || 'boş sətir'}" — ad və miqdar düzgün olmalıdır`); return; }
+      if (!window.confirm(`${items.length} məhsul tapıldı. BÜTÜN anbar əvəz olunacaq. Davam edilsin?`)) return;
+      await replaceWh.mutateAsync({ items });
+    } catch (err) {
+      window.alert(err?.message || 'Excel oxunmadı');
+    } finally {
+      setWhImporting(false);
+      if (e.target) e.target.value = '';
+    }
+  };
 
   // Main export always contains every firm catalog, regardless of the active
   // firm/search filters. Per-firm exports below remain scoped to one group.
@@ -1244,6 +1502,44 @@ export default function Procurement({ me }) {
     ? catalog.filter((c) => `${c.internal_id} ${c.name} ${c.firm || ''}`.toLowerCase().includes(catSearch.toLowerCase()))
     : catalog;
 
+  // Anbar sətirləri (axtarış: ad + vahid).
+  const whRows = whSearch
+    ? warehouse.filter((w) => `${w.name} ${w.unit}`.toLowerCase().includes(whSearch.toLowerCase()))
+    : warehouse;
+
+  // Silinmələr — flattened: hər sətir bir məhsul (№ | Tarix | Təyinat | Məhsul | Miqdar | Açıqlama).
+  const removalRows = [];
+  for (const r of removals) {
+    for (const ln of (r.items || [])) {
+      removalRows.push({
+        id: ln.id,
+        doc_no: r.doc_no,
+        destination: r.destination,
+        created_at: r.created_at,
+        product_name: ln.product_name,
+        unit: ln.unit,
+        qty: ln.qty,
+        note: ln.note,
+      });
+    }
+  }
+
+  const WH_COLS = [
+    { key: 'n', label: '№', width: '7%', cell: (r) => <span className="text-ink-faint tabular-nums">{r._n}</span> },
+    { key: 'name', label: 'Malın adı', width: '58%', strong: true, cell: (r) => <span className="block truncate">{r.name}</span> },
+    { key: 'unit', label: 'Ölçü vahidi', width: '15%', cell: (r) => <span className="block truncate text-ink-muted">{r.unit}</span> },
+    { key: 'qty', label: 'Miqdarı', width: '20%', align: 'right', cell: (r) => <span className="tabular-nums font-semibold">{r.qty}</span> },
+  ];
+  const REM_COLS = [
+    { key: 'doc_no', label: '№', width: '7%', cell: (r) => <span className="font-mono font-bold">{r.doc_no}</span> },
+    { key: 'created_at', label: 'Tarix', width: '15%', cell: (r) => <span className="block truncate font-medium text-ink-muted">{fmtDateTime(r.created_at)}</span> },
+    { key: 'destination', label: 'Təyinat', width: '14%', strong: true, cell: (r) => <span className="block truncate">{r.destination}</span> },
+    { key: 'product_name', label: 'Məhsul', width: '32%', cell: (r) => <span className="block truncate">{r.product_name}</span> },
+    { key: 'qty', label: 'Miqdar', width: '12%', align: 'right', cell: (r) => <span className="tabular-nums font-semibold">{r.qty} {r.unit}</span> },
+    { key: 'note', label: 'Açıqlama', width: '20%', cell: (r) => <span className="block truncate text-ink-muted">{r.note || '—'}</span> },
+  ];
+  const whNumbered = whRows.map((w, i) => ({ ...w, _n: i + 1 }));
+
   const ORDER_COLS = [
     { key: 'id', label: '#', width: '7%', cell: (r) => <span className="text-ink-faint">#{r.id}</span> },
     { key: 'requester_name', label: 'Sifariş edən', width: '18%', strong: true, cell: (r) => <span className="block truncate">{r.requester_name}</span> },
@@ -1351,12 +1647,13 @@ export default function Procurement({ me }) {
               {active.label}
               {section === 'orders' && <span className="text-[13px] font-medium tabular-nums text-ink-faint"> · {allRows.length} qeyd</span>}
               {section === 'catalog' && <span className="text-[13px] font-medium tabular-nums text-ink-faint"> · {catalog.length} məhsul</span>}
+              {section === 'warehouse' && <span className="text-[13px] font-medium tabular-nums text-ink-faint"> · {warehouse.length} məhsul</span>}
             </h2>
             {active.endpoint && (
               <div className="proc-toolbar">
                 <div className="proc-search">
                   <Search size={14} className="absolute left-2.5 top-2.5 text-ink-faint" />
-                  <input value={section === 'catalog' ? catSearch : search} onChange={(e) => section === 'catalog' ? setCatSearch(e.target.value) : setSearch(e.target.value)}
+                  <input value={section === 'catalog' ? catSearch : section === 'warehouse' ? whSearch : search} onChange={(e) => section === 'catalog' ? setCatSearch(e.target.value) : section === 'warehouse' ? setWhSearch(e.target.value) : setSearch(e.target.value)}
                     placeholder="Axtar..."                     className="proc-control pl-8 pr-2 text-[13px] rounded-lg bg-input border border-line outline-none focus:border-[var(--accent)]" />
                 </div>
                 {section === 'catalog' && (
@@ -1378,6 +1675,24 @@ export default function Procurement({ me }) {
                   </select>
                 )}
                 {section === 'orders' && !isBoss &&                 <button onClick={() => setEditing({})} className="proc-btn inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Yeni sifariş</button>}
+                {section === 'warehouse' && (
+                  <>
+                    <input ref={whFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleWarehouseFile} />
+                    <button onClick={() => setWhAdding(true)} className="proc-btn inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px]"><Plus size={15} /> Əlavə et</button>
+                    <button onClick={() => whFileRef.current?.click()} disabled={whImporting || replaceWh.isPending}
+                      title="Excel faylı seçin (Malın adı | Ölçü vahidi | Miqdarı) — bütün anbar əvəz olunur"
+                      className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110 disabled:opacity-50"
+                      style={{ borderColor: `${AMBER}80`, background: `${AMBER}1a`, color: AMBER }}>
+                      <Upload size={15} /> {whImporting || replaceWh.isPending ? 'Yüklənir…' : 'Tam yeniləmə'}
+                    </button>
+                    <button onClick={handleWarehouseExport}
+                      title="Hazırkı anbarı Excel-ə çıxar"
+                      className="inline-flex items-center gap-1.5 rounded-lg border px-4 py-2 text-[13px] font-bold hover:brightness-110"
+                      style={{ borderColor: `${EM}80`, background: `${EM}1a`, color: EM }}>
+                      <Download size={15} /> Export
+                    </button>
+                  </>
+                )}
                 {section === 'catalog' && isBoss && (
                   <>
                     <input ref={catFileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleCatalogFile} />
@@ -1579,6 +1894,49 @@ export default function Procurement({ me }) {
             </div>
           )}
 
+          {/* ── Anbar: yuxarıda əsas anbar, aşağıda Silinmələr ── */}
+          {section === 'warehouse' && (whQ.isLoading || remQ.isLoading
+            ? <SkeletonTable />
+            : (
+              <div className="space-y-6">
+                <div>
+                  {whNumbered.length === 0 ? (
+                    <EmptyState icon={Warehouse} title={whSearch ? 'Axtarışa uyğun məhsul yoxdur' : 'Anbar boşdur'}
+                      hint={whSearch ? 'Başqa ad yazın' : 'Excel-dən Tam yeniləmə edin və ya Əlavə et düyməsi ilə ilk məhsulu yaradın'} />
+                  ) : (
+                    <Table columns={WH_COLS} rows={whNumbered} minWidth={640} />
+                  )}
+                </div>
+                <div>
+                  <div className="mb-2.5 flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="grid size-6 place-items-center rounded-lg shrink-0" style={{ background: `${RED}1a`, color: RED }}>
+                        <Minus size={12} strokeWidth={2.5} />
+                      </span>
+                      <span className="text-[13px] font-bold">Silinmələr</span>
+                      <span className="text-[11px] text-ink-faint tabular-nums font-semibold">{removalRows.length} sətir</span>
+                    </div>
+                    <div className="ml-auto">
+                      <button onClick={() => { setRemovalErr(''); setRemovalOpen(true); }}
+                        disabled={!warehouse.length}
+                        className="proc-btn inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] disabled:opacity-50">
+                        <Plus size={15} /> Silinmə yarat</button>
+                    </div>
+                  </div>
+                  {removalRows.length === 0 ? (
+                    <EmptyState icon={Minus} title="Hələ silinmə yoxdur"
+                      hint="Əsas anbardan silinən mallar burada görünəcək — miqdar avtomatik azalacaq" />
+                  ) : (
+                    <Table columns={REM_COLS} rows={removalRows} minWidth={860} />
+                  )}
+                </div>
+              </div>
+            )
+          )}
+
+          {/* ── 1C: tamamilə boş bölmə (yalnız səhifə + naviqasiya) ── */}
+          {section === '1c' && null}
+
           <footer className="mt-4 pt-2 border-t border-line text-center">
             <p className="text-[11px] font-semibold text-ink-faint">Appina Procurement — Developed by <a href="https://www.linkedin.com/in/elinzrv/" target="_blank" rel="noopener noreferrer" title="LinkedIn — Elməddin Nəzərli" className="proc-grad font-black hover:opacity-80 hover:underline underline-offset-2">Elməddin Nəzərli</a></p>
           </footer>
@@ -1593,6 +1951,14 @@ export default function Procurement({ me }) {
             onClose={() => { setEditing(null); setEditDetail(null); setSaveErr(''); }}
             onSave={(form) => { setSaveErr(''); saveOrder.mutate(form); }} saving={saveOrder.isPending} serverErr={saveErr} />)}
       {catEditing && <CatalogForm row={catEditing.id ? catEditing : null} firms={firms} onClose={() => setCatEditing(null)} onSave={(f) => saveCat.mutate(f)} saving={saveCat.isPending} />}
+      {whAdding && <WarehouseForm onClose={() => setWhAdding(false)} onSave={(f) => addWh.mutate(f)} saving={addWh.isPending} />}
+      {removalOpen && (
+        <RemovalForm stock={warehouse}
+          nextDocNo={String((removals.reduce((m, r) => Math.max(m, Number(r.doc_no) || 0), 0) || removals.length) + 1)}
+          onClose={() => { setRemovalOpen(false); setRemovalErr(''); }}
+          onSave={(f) => { setRemovalErr(''); createRemoval.mutate(f); }}
+          saving={createRemoval.isPending} serverErr={removalErr} />
+      )}
     </div>
   );
 }

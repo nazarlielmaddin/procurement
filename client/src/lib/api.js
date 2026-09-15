@@ -14,9 +14,37 @@ const catalogSeed = [
   ['CBL-HDMI2', 'HDMI kabel 2m', 'əd', 6, 'PREMIER'],
 ].map((x, i) => ({ id: i + 1, internal_id: x[0], name: x[1], unit: x[2], buy_price: x[3], sell_price: x[3], firm: x[4] }));
 
+import warehouseSeed from './warehouse_seed.json';
+
+function seedWarehouse() {
+  return (warehouseSeed || []).map((w, i) => ({
+    id: i + 1,
+    name: w.name,
+    unit: w.unit || 'ədəd',
+    qty: Number(w.qty) || 0,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }));
+}
+
+function blankDemo() {
+  return {
+    catalog: catalogSeed, orders: [], nextOrder: 1, nextCatalog: 6, me: null,
+    warehouse: seedWarehouse(), nextWarehouse: 1000,
+    removals: [], nextRemoval: 1, nextRemovalLine: 1,
+  };
+}
+
 function read() {
-  try { return JSON.parse(localStorage.getItem(KEY)) || { catalog: catalogSeed, orders: [], nextOrder: 1, nextCatalog: 6, me: null }; }
-  catch { return { catalog: catalogSeed, orders: [], nextOrder: 1, nextCatalog: 6, me: null }; }
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (!s) return blankDemo();
+    // Backfill for demos stored before warehouse/removals existed.
+    if (!Array.isArray(s.warehouse)) { s.warehouse = seedWarehouse(); s.nextWarehouse = 1000; }
+    if (!Array.isArray(s.removals)) { s.removals = []; s.nextRemoval = 1; s.nextRemovalLine = 1; }
+    return s;
+  }
+  catch { return blankDemo(); }
 }
 function write(state) { localStorage.setItem(KEY, JSON.stringify(state)); return state; }
 function result(data) { return Promise.resolve(data); }
@@ -60,6 +88,77 @@ async function mock(method, path, body) {
   if (catalogId && method === 'DELETE') { state.catalog = state.catalog.filter((x) => x.id !== Number(catalogId[1])); write(state); return result({ ok: true }); }
   if (cleanPath === '/procurement/catalog/replace' && method === 'POST') { state.catalog = body.items.map((x, i) => ({ ...x, id: i + 1 })); write(state); return result({ ok: true }); }
   if (cleanPath === '/procurement/dashboard') return result(dashboard(state));
+  // ── Anbar (demo): same shapes as the server warehouse API ──
+  if (cleanPath === '/procurement/warehouse' && method === 'GET') return result({ items: state.warehouse });
+  if (cleanPath === '/procurement/warehouse' && method === 'POST') {
+    const name = String(body?.name || '').trim();
+    const unit = String(body?.unit || '').trim() || 'ədəd';
+    const qty = Number(body?.qty);
+    if (!name) throw Object.assign(new Error('Məhsul adı mütləqdir'), { status: 400 });
+    if (!Number.isFinite(qty) || qty < 0) throw Object.assign(new Error('Miqdar yanlışdır'), { status: 400 });
+    if (state.warehouse.some((w) => w.name.toLowerCase() === name.toLowerCase() && w.unit.toLowerCase() === unit.toLowerCase())) {
+      throw Object.assign(new Error('Bu məhsul artıq anbardadır'), { status: 409 });
+    }
+    const row = { id: state.nextWarehouse++, name, unit, qty, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    state.warehouse.push(row); write(state); return result({ id: row.id });
+  }
+  const whId = cleanPath.match(/^\/procurement\/warehouse\/(\d+)$/);
+  if (whId && method === 'PUT') {
+    const row = state.warehouse.find((x) => x.id === Number(whId[1]));
+    if (!row) throw Object.assign(new Error('Tapılmadı'), { status: 404 });
+    if (body?.name !== undefined) row.name = String(body.name).trim() || row.name;
+    if (body?.unit !== undefined) row.unit = String(body.unit).trim() || row.unit;
+    if (body?.qty !== undefined) {
+      const q = Number(body.qty);
+      if (!Number.isFinite(q) || q < 0) throw Object.assign(new Error('Miqdar yanlışdır'), { status: 400 });
+      row.qty = q;
+    }
+    row.updated_at = new Date().toISOString(); write(state); return result({ ok: true });
+  }
+  if (cleanPath === '/procurement/warehouse/replace' && method === 'POST') {
+    const items = Array.isArray(body?.items) ? body.items : [];
+    state.warehouse = items.map((w, i) => ({
+      id: i + 1, name: String(w.name).trim(), unit: String(w.unit || '').trim() || 'ədəd',
+      qty: Number(w.qty) || 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    }));
+    state.nextWarehouse = state.warehouse.length + 1; write(state);
+    return result({ ok: true, count: state.warehouse.length });
+  }
+  if (cleanPath === '/procurement/warehouse/removals' && method === 'GET') {
+    return result({ items: [...state.removals].reverse() });
+  }
+  if (cleanPath === '/procurement/warehouse/removals' && method === 'POST') {
+    const destination = String(body?.destination || '').trim();
+    if (!destination) throw Object.assign(new Error('Təyinat / obyekt mütləqdir'), { status: 400 });
+    const lines = Array.isArray(body?.lines) ? body.lines : [];
+    if (!lines.length) throw Object.assign(new Error('Ən azı bir məhsul seçin'), { status: 400 });
+    let docNo = String(body?.doc_no || '').trim() || String(state.nextRemoval);
+    const now = new Date().toISOString();
+    const built = lines.map((ln) => {
+      const prod = state.warehouse.find((w) => w.id === Number(ln?.warehouse_item_id));
+      const q = Number(ln?.qty);
+      if (!prod) throw Object.assign(new Error('Məhsul tapılmadı'), { status: 404 });
+      if (!Number.isFinite(q) || q <= 0) throw Object.assign(new Error(`"${prod.name}" — miqdar yanlışdır`), { status: 400 });
+      if (q > Number(prod.qty)) throw Object.assign(new Error(`"${prod.name}" — stokda ${prod.qty} ${prod.unit} var`), { status: 400 });
+      return { prod, q, note: String(ln?.note || '').trim() };
+    });
+    const removal = {
+      id: state.nextRemoval++, doc_no: docNo, destination,
+      note: String(body?.note || '').trim(),
+      created_by_name: currentUser(state).full_name, created_at: now, items: [],
+    };
+    for (const b of built) {
+      b.prod.qty = Number(b.prod.qty) - b.q;
+      b.prod.updated_at = now;
+      removal.items.push({
+        id: state.nextRemovalLine++, removal_id: removal.id,
+        warehouse_item_id: b.prod.id, product_name: b.prod.name, unit: b.prod.unit,
+        qty: b.q, note: b.note,
+      });
+    }
+    state.removals.push(removal); write(state);
+    return result({ id: removal.id, doc_no: removal.doc_no });
+  }
   if (path.startsWith('/procurement/orders/') && path.endsWith('/mentionables')) return result({ users });
   if (path.startsWith('/procurement/orders/') && !path.endsWith('/decision') && !path.endsWith('/reopen') && method === 'GET') return result(detail(state, path.split('/')[3]));
   if (cleanPath === '/procurement/orders' && method === 'GET') return result({ orders: state.orders });

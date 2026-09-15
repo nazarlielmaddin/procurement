@@ -1,5 +1,9 @@
-// Idempotent seed: 4 users (tap-to-enter, no passwords) + 5 demo catalog items.
+// Idempotent seed: 4 users (tap-to-enter, no passwords) + 5 demo catalog items
+// + warehouse stock from server/db/warehouse_seed.json (Excel "anbar faktiki sayım").
 import { procDb, __resetDb } from '../lib/proc_db.js';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const SEEDS = [
   { full_name: 'Elməddin Nəzərli', login: 'elmeddin.nezerli', proc_role: 'procurement_specialist' },
@@ -39,6 +43,33 @@ for (const c of DEMO_CATALOG) {
   db.prepare(`INSERT OR IGNORE INTO price_catalog (internal_id, name, unit, buy_price, firm, sell_price)
               VALUES (?, ?, ?, ?, ?, ?)`)
     .run(c.internal_id, c.name, c.unit, c.buy_price, c.firm, c.buy_price);
+}
+
+// Warehouse: only fills an EMPTY stock table — never overwrites removals' deductions.
+try {
+  const whCount = db.prepare('SELECT COUNT(*) AS n FROM warehouse_items').get()?.n || 0;
+  if (!whCount) {
+    const seedPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'db', 'warehouse_seed.json');
+    if (existsSync(seedPath)) {
+      const whItems = JSON.parse(readFileSync(seedPath, 'utf8'));
+      const now = new Date().toISOString();
+      const ins = db.prepare('INSERT OR IGNORE INTO warehouse_items (name, unit, qty, created_at, updated_at) VALUES (?, ?, ?, ?, ?)');
+      let n = 0;
+      for (const w of whItems) {
+        const name = String(w?.name || '').trim();
+        const unit = String(w?.unit || '').trim() || 'ədəd';
+        const qty = Number(w?.qty);
+        if (!name || !Number.isFinite(qty) || qty < 0) continue;
+        ins.run(name, unit, qty, now, now);
+        n++;
+      }
+      console.log(`Warehouse stock seeded: ${n} items (Excel faktiki sayım).`);
+    }
+  } else {
+    console.log(`Warehouse stock kept: ${whCount} items (seed skipped — table not empty).`);
+  }
+} catch (e) {
+  console.log('Warehouse seed skipped:', e?.message);
 }
 
 console.log('\nSeed users (tap-to-enter — no passwords, just pick a profile):\n');

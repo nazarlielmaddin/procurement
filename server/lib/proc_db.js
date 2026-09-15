@@ -94,6 +94,53 @@ function migrate(pdb) {
   } else {
     pdb.exec('CREATE INDEX IF NOT EXISTS idx_catalog_firm ON price_catalog (firm)');
   }
+
+  // ── Anbar (warehouse) tables for pre-existing DB files ──
+  pdb.exec(`CREATE TABLE IF NOT EXISTS warehouse_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'ədəd',
+    qty REAL NOT NULL DEFAULT 0 CHECK (qty >= 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (name, unit)
+  )`);
+  pdb.exec(`CREATE TABLE IF NOT EXISTS stock_removals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_no TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER NULL REFERENCES users (id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )`);
+  pdb.exec(`CREATE TABLE IF NOT EXISTS stock_removal_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    removal_id INTEGER NOT NULL REFERENCES stock_removals (id) ON DELETE CASCADE,
+    warehouse_item_id INTEGER NULL REFERENCES warehouse_items (id) ON DELETE SET NULL,
+    product_name TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    qty REAL NOT NULL CHECK (qty > 0),
+    note TEXT NOT NULL DEFAULT ''
+  )`);
+  pdb.exec('CREATE INDEX IF NOT EXISTS idx_warehouse_name ON warehouse_items (name)');
+  pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_doc ON stock_removals (doc_no)');
+  pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_created ON stock_removals (created_at)');
+  pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_item_removal ON stock_removal_items (removal_id)');
+  pdb.exec('CREATE INDEX IF NOT EXISTS idx_removal_item_product ON stock_removal_items (warehouse_item_id)');
+
+  // New sections for existing users (orders,catalog,dashboard → + warehouse,1c).
+  try {
+    for (const u of pdb.prepare('SELECT id, sections_csv FROM users').all()) {
+      const parts = String(u.sections_csv || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+      let changed = false;
+      for (const need of ['warehouse', '1c']) {
+        if (!parts.includes(need)) { parts.push(need); changed = true; }
+      }
+      if (changed) {
+        pdb.prepare('UPDATE users SET sections_csv = ? WHERE id = ?').run(parts.join(','), u.id);
+      }
+    }
+  } catch { /* users table may not exist yet in fresh test DBs */ }
 }
 
 // Test-only: drop the cached handle so a fresh DB can be opened.

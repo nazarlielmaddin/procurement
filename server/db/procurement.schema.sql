@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   proc_role TEXT NOT NULL CHECK (proc_role IN ('procurement_specialist', 'boss')),
   proc_access INTEGER NOT NULL DEFAULT 1,
-  sections_csv TEXT NOT NULL DEFAULT 'orders,catalog,dashboard',
+  sections_csv TEXT NOT NULL DEFAULT 'orders,catalog,dashboard,warehouse,1c',
   -- Appina-integration seam: maps to the future Appina user id. NULL = standalone.
   appina_user_id TEXT NULL UNIQUE,
   must_rotate INTEGER NOT NULL DEFAULT 1,
@@ -117,3 +117,44 @@ CREATE INDEX IF NOT EXISTS idx_comments_order ON comments (order_id, created_at)
 -- the index here would crash boot with "no such column: parent_id".
 CREATE INDEX IF NOT EXISTS idx_history_order ON status_history (order_id, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+
+-- ── Anbar (warehouse): Excel "anbar faktiki sayım" strukturu 1:1 ──
+-- Malın adı | Ölçü vahidi | Miqdarı → name | unit | qty.
+CREATE TABLE IF NOT EXISTS warehouse_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  unit TEXT NOT NULL DEFAULT 'ədəd',
+  qty REAL NOT NULL DEFAULT 0 CHECK (qty >= 0),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE (name, unit)
+);
+
+-- Silinmə sənədi (başlıq): № + Təyinat/obyekt + tarix/vaxt + kim yaratdı.
+CREATE TABLE IF NOT EXISTS stock_removals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  doc_no TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER NULL REFERENCES users (id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Silinmə sətirləri: bir sənəddə bir neçə məhsul. product_name/unit
+-- snapshot-dur (əsas cədvəddəki ad dəyişsə tarixçə pozulmur);
+-- warehouse_item_id əlaqəni saxlayır (ON DELETE SET NULL).
+CREATE TABLE IF NOT EXISTS stock_removal_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  removal_id INTEGER NOT NULL REFERENCES stock_removals (id) ON DELETE CASCADE,
+  warehouse_item_id INTEGER NULL REFERENCES warehouse_items (id) ON DELETE SET NULL,
+  product_name TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  qty REAL NOT NULL CHECK (qty > 0),
+  note TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_warehouse_name ON warehouse_items (name);
+CREATE INDEX IF NOT EXISTS idx_removal_doc ON stock_removals (doc_no);
+CREATE INDEX IF NOT EXISTS idx_removal_created ON stock_removals (created_at);
+CREATE INDEX IF NOT EXISTS idx_removal_item_removal ON stock_removal_items (removal_id);
+CREATE INDEX IF NOT EXISTS idx_removal_item_product ON stock_removal_items (warehouse_item_id);
